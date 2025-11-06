@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { body, param } from 'express-validator';
 import { authenticateUser, AuthRequest } from '../middleware/auth';
 import { AppError } from '../middleware/errorHandler';
+import { generateContextualPrompt, isOpenAIConfigured } from '../services/openai.service';
 
 const router = Router();
 router.use(authenticateUser);
@@ -48,21 +49,35 @@ router.post(
     try {
       const { projectId, promptType, context } = req.body;
 
-      // TODO: Implement actual AI prompt generation
-      // For now, return a mock prompt
-      const generatedPrompt = `
-# AI-Generated Prompt (${promptType})
+      // Check if OpenAI is configured
+      if (!isOpenAIConfigured()) {
+        throw new AppError('OpenAI API is not configured. Set OPENAI_API_KEY in .env', 500);
+      }
 
-Project ID: ${projectId}
+      // Fetch project data
+      const [projectRes, modulesRes, userStoriesRes, featuresRes] = await Promise.all([
+        req.supabase!.from('projects').select('*').eq('id', projectId).single(),
+        req.supabase!.from('modules').select('*').eq('project_id', projectId),
+        req.supabase!.from('user_stories').select('*').eq('project_id', projectId),
+        req.supabase!.from('features').select('*').eq('project_id', projectId)
+      ]);
 
-This is a placeholder prompt. In production, this would:
-1. Fetch all project data from database
-2. Build context from modules, user stories, business rules
-3. Send to AI API (OpenAI/Anthropic)
-4. Return generated prompt
+      const projectData = {
+        name: projectRes.data?.name,
+        description: projectRes.data?.description,
+        modules: modulesRes.data || [],
+        userStories: userStoriesRes.data || [],
+        features: featuresRes.data || []
+      };
 
-Replace this with actual AI integration.
-      `.trim();
+      console.log('🤖 Generating AI prompt...');
+
+      // Generate prompt using OpenAI
+      const generatedPrompt = await generateContextualPrompt(
+        projectId,
+        projectData,
+        promptType
+      );
 
       // Save prompt to database
       const { data: prompt, error } = await req.supabase!
@@ -79,6 +94,8 @@ Replace this with actual AI integration.
       if (error) {
         throw new AppError(error.message, 400);
       }
+
+      console.log('✅ Prompt generated and saved');
 
       res.json({
         success: true,
