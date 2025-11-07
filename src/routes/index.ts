@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import authRoutes from './auth.routes';
 import projectsRoutes from './projects.routes';
+import projectInformationRoutes from './projectInformation.routes';
 import userStoriesRoutes from './userStories.routes';
 import modulesRoutes from './modules.routes';
 import featuresRoutes from './features.routes';
@@ -27,6 +28,7 @@ router.get('/health', (req, res) => {
 // Mount route modules
 router.use('/auth', authRoutes);
 router.use('/projects', projectsRoutes);
+router.use('/', projectInformationRoutes); // Includes /projects/:projectId/project-information
 router.use('/', userStoriesRoutes); // Includes /projects/:projectId/user-stories
 router.use('/', modulesRoutes); // Includes /projects/:projectId/modules
 router.use('/', featuresRoutes); // Includes /projects/:projectId/features
