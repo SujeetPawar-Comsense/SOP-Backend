@@ -3,9 +3,11 @@
  */
 
 export interface ParsedBRD {
-  projectOverview: ProjectOverview;
+  projectOverview?: ProjectOverview;
   modules: Module[];
   businessRules: BusinessRule[];
+  techStackSuggestions?: TechStackSuggestions;
+  uiUxGuidelines?: UIUXGuidelines;
 }
 
 export interface ProjectOverview {
@@ -37,14 +39,18 @@ export interface Requirements {
 export interface Module {
   moduleName: string;
   moduleDescription: string;
+  priority?: 'High' | 'Medium' | 'Low';
+  businessImpact?: string;
+  dependencies?: string[];
   userStories: UserStory[];
 }
 
 export interface UserStory {
-  userStory: string;
   title: string;
-  priority: 'High' | 'Medium' | 'Low';
+  userRole?: string;
+  description: string;
   acceptanceCriteria: string[];
+  priority: 'High' | 'Medium' | 'Low';
   features: Feature[];
 }
 
@@ -52,13 +58,44 @@ export interface Feature {
   featureName: string;
   taskDescription: string;
   priority: 'High' | 'Medium' | 'Low';
-  acceptanceCriteria: string[];
+  estimated_hours?: string;
+  business_rules?: string;
 }
 
 export interface BusinessRule {
   ruleName: string;
   ruleDescription: string;
   applicableTo: string[];
+}
+
+export interface TechStackSuggestions {
+  frontend?: TechStackItem[];
+  backend?: TechStackItem[];
+  database?: TechStackItem[];
+  cloud?: TechStackItem[];
+  other?: TechStackItem[];
+}
+
+export interface TechStackItem {
+  name: string;
+  rationale: string;
+}
+
+export interface UIUXGuidelines {
+  keyPersonas?: Persona[];
+  corePrinciples?: string[];
+  designSystem?: DesignSystem;
+}
+
+export interface Persona {
+  persona: string;
+  description: string;
+}
+
+export interface DesignSystem {
+  colorPalette?: string;
+  typography?: string;
+  keyComponents?: string[];
 }
 
 export interface EnhancementRequest {
@@ -69,8 +106,8 @@ export interface EnhancementRequest {
 }
 
 export interface EnhancementResponse {
-  updatedObject: Module | UserStory | Feature;
-  targetType: 'module' | 'userStory' | 'feature';
+  updatedObject: Module | UserStory | Feature | ParsedBRD;
+  targetType: 'module' | 'userStory' | 'feature' | 'project';
   message: string;
 }
 

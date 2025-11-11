@@ -159,10 +159,40 @@ router.put(
  * DELETE /api/projects/:id
  * Delete a project
  */
-router.delete('/:id', async (req: AuthRequest, res, next) => {
+router.delete('/:id', requireProjectOwner, async (req: AuthRequest, res, next) => {
   try {
     const { id } = req.params;
 
+    // First check if the project exists and user owns it
+    const { data: project, error: fetchError } = await req.supabase!
+      .from('projects')
+      .select('created_by')
+      .eq('id', id)
+      .single();
+
+    if (fetchError || !project) {
+      throw new AppError('Project not found', 404);
+    }
+
+    // Check if user owns the project
+    if (project.created_by !== req.user!.id) {
+      throw new AppError('You do not have permission to delete this project', 403);
+    }
+
+    // Delete all related data (cascade delete should handle this, but being explicit)
+    // The order matters due to foreign key constraints
+    await req.supabase!.from('features').delete().eq('project_id', id);
+    await req.supabase!.from('user_stories').delete().eq('project_id', id);
+    await req.supabase!.from('modules').delete().eq('project_id', id);
+    await req.supabase!.from('business_rules').delete().eq('project_id', id);
+    await req.supabase!.from('tech_stack').delete().eq('project_id', id);
+    await req.supabase!.from('ui_ux_guidelines').delete().eq('project_id', id);
+    await req.supabase!.from('actions_interactions').delete().eq('project_id', id);
+    await req.supabase!.from('animation_effects').delete().eq('project_id', id);
+    await req.supabase!.from('project_information').delete().eq('project_id', id);
+    await req.supabase!.from('generated_prompts').delete().eq('project_id', id);
+
+    // Finally delete the project
     const { error } = await req.supabase!
       .from('projects')
       .delete()
@@ -174,7 +204,7 @@ router.delete('/:id', async (req: AuthRequest, res, next) => {
 
     res.json({
       success: true,
-      message: 'Project deleted successfully'
+      message: 'Project and all related data deleted successfully'
     });
   } catch (error) {
     next(error);
