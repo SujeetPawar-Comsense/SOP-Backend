@@ -24,9 +24,22 @@ router.get('/projects/:projectId/modules', async (req: AuthRequest, res, next) =
       throw new AppError(error.message, 400);
     }
 
+    // Transform snake_case to camelCase for frontend compatibility
+    const transformedModules = (modules || []).map(module => ({
+      id: module.id,
+      moduleName: module.module_name,
+      description: module.description,
+      priority: module.priority,
+      businessImpact: module.business_impact,
+      dependencies: module.dependencies,
+      status: module.status,
+      createdAt: module.created_at,
+      updatedAt: module.updated_at
+    }));
+
     res.json({
       success: true,
-      modules: modules || []
+      modules: transformedModules
     });
   } catch (error) {
     next(error);
@@ -56,30 +69,42 @@ router.post(
       const { projectId } = req.params;
       const { modules } = req.body;
 
-      // Delete existing modules
-      await req.supabase!
-        .from('modules')
-        .delete()
-        .eq('project_id', projectId);
-
-      // Insert new modules
-      const modulesWithProjectId = modules.map((module: any) => ({
-        ...module,
-        project_id: projectId
+      // Transform camelCase to snake_case for database
+      const transformedModules = modules.map((module: any) => ({
+        id: module.id, // Preserve the ID
+        project_id: projectId,
+        module_name: module.moduleName,
+        description: module.description,
+        priority: module.priority,
+        business_impact: module.businessImpact,
+        dependencies: module.dependencies,
+        status: module.status
       }));
 
+      // Use upsert to handle both new and existing modules
       const { data, error } = await req.supabase!
         .from('modules')
-        .insert(modulesWithProjectId)
+        .upsert(transformedModules, { onConflict: 'id' })
         .select();
 
       if (error) {
         throw new AppError(error.message, 400);
       }
 
+      // Transform back to camelCase for response
+      const responseModules = (data || []).map(module => ({
+        id: module.id,
+        moduleName: module.module_name,
+        description: module.description,
+        priority: module.priority,
+        businessImpact: module.business_impact,
+        dependencies: module.dependencies,
+        status: module.status
+      }));
+
       res.json({
         success: true,
-        modules: data
+        modules: responseModules
       });
     } catch (error) {
       next(error);

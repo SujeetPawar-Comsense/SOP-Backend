@@ -4,11 +4,18 @@
 
 export interface ParsedBRD {
   projectOverview?: ProjectOverview;
+  ApplicationType?: ApplicationType;
   modules: Module[];
   businessRules: BusinessRule[];
   techStackSuggestions?: TechStackSuggestions;
   uiUxGuidelines?: UIUXGuidelines;
 }
+
+export type ApplicationType = 
+  | 'Batch Application' 
+  | 'Web Application' 
+  | 'Website' 
+  | 'Microservices';
 
 export interface ProjectOverview {
   projectName: string;
@@ -109,5 +116,22 @@ export interface EnhancementResponse {
   updatedObject: Module | UserStory | Feature | ParsedBRD;
   targetType: 'module' | 'userStory' | 'feature' | 'project';
   message: string;
+}
+
+export type DevelopmentType = 
+  | 'Frontend'
+  | 'Backend API'
+  | 'Database Schema'
+  | 'Unit Tests'
+  | 'Integration Tests'
+  | 'Batch Application'
+  | 'Microservices'
+  | 'CI/CD Pipeline'
+  | 'Documentation';
+
+export interface PromptGenerationRequest {
+  projectJSON: ParsedBRD;
+  developmentType: DevelopmentType;
+  previousOutputs: string[];
 }
 

@@ -24,9 +24,23 @@ router.get('/projects/:projectId/user-stories', async (req: AuthRequest, res, ne
       throw new AppError(error.message, 400);
     }
 
+    // Transform snake_case to camelCase for frontend compatibility
+    const transformedStories = (userStories || []).map(story => ({
+      id: story.id,
+      title: story.title,
+      userRole: story.user_role,
+      description: story.description,
+      acceptanceCriteria: story.acceptance_criteria?.split('\n').filter(Boolean) || [],
+      priority: story.priority,
+      status: story.status,
+      moduleId: story.module_id,
+      createdAt: story.created_at,
+      updatedAt: story.updated_at
+    }));
+
     res.json({
       success: true,
-      userStories: userStories || []
+      userStories: transformedStories
     });
   } catch (error) {
     next(error);
@@ -56,30 +70,46 @@ router.post(
       const { projectId } = req.params;
       const { userStories } = req.body;
 
-      // Delete existing user stories for this project
-      await req.supabase!
-        .from('user_stories')
-        .delete()
-        .eq('project_id', projectId);
-
-      // Insert new user stories
-      const storiesWithProjectId = userStories.map((story: any) => ({
-        ...story,
-        project_id: projectId
+      // Transform camelCase to snake_case for database
+      const transformedStories = userStories.map((story: any) => ({
+        id: story.id, // Preserve the ID
+        project_id: projectId,
+        title: story.title,
+        user_role: story.userRole,
+        description: story.description,
+        acceptance_criteria: Array.isArray(story.acceptanceCriteria) 
+          ? story.acceptanceCriteria.join('\n') 
+          : story.acceptanceCriteria,
+        priority: story.priority,
+        status: story.status,
+        module_id: story.moduleId
       }));
 
+      // Use upsert to handle both new and existing stories
       const { data, error } = await req.supabase!
         .from('user_stories')
-        .insert(storiesWithProjectId)
+        .upsert(transformedStories, { onConflict: 'id' })
         .select();
 
       if (error) {
         throw new AppError(error.message, 400);
       }
 
+      // Transform back to camelCase for response
+      const responseStories = (data || []).map(story => ({
+        id: story.id,
+        title: story.title,
+        userRole: story.user_role,
+        description: story.description,
+        acceptanceCriteria: story.acceptance_criteria?.split('\n') || [],
+        priority: story.priority,
+        status: story.status,
+        moduleId: story.module_id
+      }));
+
       res.json({
         success: true,
-        userStories: data
+        userStories: responseStories
       });
     } catch (error) {
       next(error);

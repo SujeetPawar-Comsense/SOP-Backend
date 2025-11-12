@@ -61,7 +61,7 @@ router.post(
           name,
           description,
           created_by: req.user!.id,
-          created_by_name: req.user!.email, // Will be updated when we have user names
+          created_by_name: req.user!.name,
           created_by_role: req.user!.role,
           completion_percentage: 0
         })

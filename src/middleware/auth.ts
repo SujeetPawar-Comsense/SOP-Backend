@@ -6,6 +6,7 @@ export interface AuthRequest extends Request {
   user?: {
     id: string;
     email: string;
+    name: string;
     role: string;
   };
   supabase?: ReturnType<typeof createUserClient>;
@@ -19,7 +20,7 @@ export const authenticateUser = async (
   req: AuthRequest,
   res: Response,
   next: NextFunction
-) => {
+): Promise<any> => {
   try {
     const authHeader = req.headers.authorization;
 
@@ -42,25 +43,20 @@ export const authenticateUser = async (
       });
     }
 
-    // Fetch user profile from database
-    const { data: userProfile, error: profileError } = await supabaseAdmin
+    // Fetch user profile from database (optional - may not exist)
+    const { data: userProfile } = await supabaseAdmin
       .from('users')
       .select('*')
       .eq('id', user.id)
       .single();
 
-    if (profileError || !userProfile) {
-      return res.status(401).json({
-        success: false,
-        error: 'User profile not found'
-      });
-    }
-
     // Attach user to request
+    // If no profile exists, use email from JWT and default role
     req.user = {
-      id: userProfile.id,
-      email: userProfile.email,
-      role: userProfile.role
+      id: user.id,
+      email: userProfile?.email || user.email || '',
+      name: userProfile?.name || user.user_metadata?.name || user.email?.split('@')[0] || 'Unknown User',
+      role: userProfile?.role || user.user_metadata?.role || 'project_owner' // Default to project_owner if no profile
     };
 
     // Create user-specific Supabase client (respects RLS)
@@ -80,7 +76,7 @@ export const authenticateUser = async (
  * Role-based authorization middleware
  */
 export const requireRole = (...roles: string[]) => {
-  return (req: AuthRequest, res: Response, next: NextFunction) => {
+  return (req: AuthRequest, res: Response, next: NextFunction): any => {
     if (!req.user) {
       return res.status(401).json({
         success: false,

@@ -2,8 +2,9 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { authenticateUser, requireProjectOwner, AuthRequest } from '../middleware/auth';
 import { AppError } from '../middleware/errorHandler';
-import { parseBRDDocument, enhanceProjectSection, isOpenAIConfigured, generateDesignPrompts, analyzeProjectOverview } from '../services/openai.service';
+import { parseBRDDocument, enhanceProjectSection, isOpenAIConfigured, generateDesignPrompts, analyzeProjectOverview, parseBRDWithProjectOverview, enhanceWithDynamicPrompt } from '../services/openai.service';
 import { ParsedBRD } from '../types/brd.types';
+import { SupabaseClient } from '@supabase/supabase-js';
 
 const router = Router();
 router.use(authenticateUser);
@@ -14,7 +15,7 @@ router.use(authenticateUser);
  */
 router.post(
   '/parse-full',
-  requireProjectOwner,
+  authenticateUser, // Changed from requireProjectOwner to just authenticateUser
   [
     body('projectId').isUUID().withMessage('Valid project ID is required'),
     body('projectOverview').isObject().withMessage('Project overview is required')
@@ -34,7 +35,7 @@ router.post(
         });
       }
 
-      const { projectId, projectOverview, brdContent } = req.body;
+      const { projectId, brdContent } = req.body;
 
       console.log('📄 Parsing full BRD structure...');
 
@@ -113,22 +114,35 @@ router.post(
 
               // Insert features for this user story
               if (story.features && story.features.length > 0) {
+                console.log(`    Saving ${story.features.length} features for story: ${story.title}`);
                 for (const feature of story.features) {
-                  await req.supabase!
+                  const featureData = {
+                    project_id: projectId,
+                    module_id: moduleData.id,
+                    user_story_id: storyData.id,
+                    title: feature.featureName,
+                    description: feature.taskDescription,
+                    priority: feature.priority || 'Medium',
+                    estimated_hours: feature.estimated_hours ? parseInt(feature.estimated_hours) : null,
+                    assignee: null,
+                    status: 'Not Started'
+                  };
+                  
+                  console.log('    Saving feature:', featureData.title);
+                  
+                  const { data: savedFeature, error: featureError } = await req.supabase!
                     .from('features')
-                    .insert({
-                      project_id: projectId,
-                      module_id: moduleData.id,
-                      user_story_id: storyData.id,
-                      title: feature.featureName,
-                      description: feature.taskDescription,
-                      priority: feature.priority || 'Medium',
-                      estimated_hours: feature.estimated_hours ? parseInt(feature.estimated_hours) : null,
-                      business_rules: feature.business_rules || null,
-                      status: 'Not Started'
-                    });
+                    .insert(featureData)
+                    .select()
+                    .single();
+                  
+                  if (featureError) {
+                    console.error('    ❌ Error saving feature:', feature.featureName, featureError);
+                  } else {
+                    console.log('    ✅ Feature saved with ID:', savedFeature.id);
+                  }
                 }
-                console.log(`    ✅ ${story.features.length} features saved`);
+                console.log(`    ✅ All features processed for story: ${story.title}`);
               }
             }
           }
@@ -231,6 +245,56 @@ router.post(
 );
 
 /**
+ * POST /api/brd/parse-project-details
+ * Parse project information to generate modules, user stories, and features
+ */
+router.post(
+  '/parse-project-details',
+  requireProjectOwner,
+  [
+    body('projectId').isUUID().withMessage('Valid project ID is required'),
+    body('projectOverview').isObject().withMessage('Project overview is required')
+  ],
+  async (req: AuthRequest, res: any, next: any) => {
+    try {
+      // Check if OpenAI is configured
+      if (!isOpenAIConfigured()) {
+        throw new AppError('OpenAI API is not configured. Please set OPENAI_API_KEY in environment variables.', 500);
+      }
+
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({
+          success: false,
+          errors: errors.array()
+        });
+      }
+
+      const { projectId, projectOverview } = req.body;
+      
+      console.log('📄 Parsing project details for project:', projectId);
+      
+      // Parse the project details using BRD_PARSER_SYSTEM_PROMPT
+      const parsedData = await parseBRDWithProjectOverview(projectOverview);
+      
+      console.log('✅ Project details parsed successfully');
+      console.log(`📦 Extracted ${parsedData.modules?.length || 0} modules`);
+      
+      // Save the parsed data to database
+      await saveParsedDataToDatabase(req.supabase!, projectId, parsedData);
+      
+      res.json({
+        success: true,
+        message: 'Project details parsed and saved successfully',
+        data: parsedData
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
  * POST /api/brd/create-from-brd
  * Create a project from BRD and immediately analyze project overview
  */
@@ -263,8 +327,10 @@ router.post(
 
       // First, analyze the BRD to extract project overview using BRD_PROJECT_OVERVIEW prompt
       console.log('🤖 Analyzing BRD for project overview...');
-      const projectOverview = await analyzeProjectOverview(brdContent);
+      const analysisResult = await analyzeProjectOverview(brdContent);
+      const { projectOverview, ApplicationType } = analysisResult;
       console.log('✅ Project overview analyzed successfully');
+      console.log(`📱 ApplicationType: ${ApplicationType}`);
 
       // Extract description from the analyzed overview
       const projectDescription = projectOverview.projectDescription || 'Project created from BRD';
@@ -276,11 +342,12 @@ router.post(
           name: projectName,
           description: projectDescription,
           created_by: req.user!.id,
-          created_by_name: req.user!.email,
+          created_by_name: req.user!.name,
           created_by_role: req.user!.role,
           completion_percentage: 0,
           from_brd: true,
-          brd_content: brdContent
+          brd_content: brdContent,
+          application_type: ApplicationType
         })
         .select()
         .single();
@@ -323,9 +390,11 @@ router.post(
         project: {
           id: project.id,
           name: project.name,
-          description: project.description
+          description: project.description,
+          application_type: ApplicationType
         },
-        projectOverview: projectOverview // Include the analyzed overview in response
+        projectOverview: projectOverview, // Include the analyzed overview in response
+        ApplicationType: ApplicationType
       });
     } catch (error) {
       next(error);
@@ -382,7 +451,7 @@ router.post(
             name,
             description,
             created_by: req.user!.id,
-            created_by_name: req.user!.email,
+            created_by_name: req.user!.name,
             created_by_role: req.user!.role,
             completion_percentage: 0
           })
@@ -416,8 +485,17 @@ router.post(
           console.log('✅ Project information saved');
         }
 
-        // Save modules and nested data
-        if (parsedBRD.modules && parsedBRD.modules.length > 0) {
+      // Save application type if present
+      if (parsedBRD.ApplicationType) {
+        await req.supabase!
+          .from('projects')
+          .update({ application_type: parsedBRD.ApplicationType })
+          .eq('id', project.id);
+        console.log('✅ Application type saved:', parsedBRD.ApplicationType);
+      }
+
+      // Save modules and nested data
+      if (parsedBRD.modules && parsedBRD.modules.length > 0) {
           for (const module of parsedBRD.modules) {
             // Insert module
             const { data: moduleData, error: moduleError } = await req.supabase!
@@ -468,22 +546,35 @@ router.post(
 
                 // Insert features for this user story
                 if (story.features && story.features.length > 0) {
+                  console.log(`    Saving ${story.features.length} features for story: ${story.title}`);
                   for (const feature of story.features) {
-                    await req.supabase!
+                    const featureData = {
+                      project_id: project.id,
+                      module_id: moduleData.id,
+                      user_story_id: storyData.id,
+                      title: feature.featureName,
+                      description: feature.taskDescription,
+                      priority: feature.priority || 'Medium',
+                      estimated_hours: feature.estimated_hours ? parseInt(feature.estimated_hours) : null,
+                      assignee: null,
+                      status: 'Not Started'
+                    };
+                    
+                    console.log('    Saving feature:', featureData.title);
+                    
+                    const { data: savedFeature, error: featureError } = await req.supabase!
                       .from('features')
-                      .insert({
-                        project_id: project.id,
-                        module_id: moduleData.id,
-                        user_story_id: storyData.id,
-                        title: feature.featureName,
-                        description: feature.taskDescription,
-                        priority: feature.priority || 'Medium',
-                        estimated_hours: feature.estimated_hours ? parseInt(feature.estimated_hours) : null,
-                        business_rules: feature.business_rules || null,
-                        status: 'Not Started'
-                      });
+                      .insert(featureData)
+                      .select()
+                      .single();
+                    
+                    if (featureError) {
+                      console.error('    ❌ Error saving feature:', feature.featureName, featureError);
+                    } else {
+                      console.log('    ✅ Feature saved with ID:', savedFeature.id);
+                    }
                   }
-                  console.log(`    ✅ ${story.features.length} features saved`);
+                  console.log(`    ✅ All features processed for story: ${story.title}`);
                 }
               }
             }
@@ -553,6 +644,83 @@ router.post(
           parsedBRD
         });
       }
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /api/brd/enhance-dynamic
+ * Enhance a specific section using DYNAMIC_PROMPT
+ */
+router.post(
+  '/enhance-dynamic',
+  requireProjectOwner,
+  [
+    body('projectId').isUUID().withMessage('Valid project ID is required'),
+    body('targetType').isIn(['module', 'userStory', 'feature']).withMessage('Valid target type is required'),
+    body('targetId').notEmpty().withMessage('Target ID is required'),
+    body('enhancementRequest').notEmpty().withMessage('Enhancement request is required')
+  ],
+  async (req: AuthRequest, res: any, next: any) => {
+    try {
+      // Check if OpenAI is configured
+      if (!isOpenAIConfigured()) {
+        throw new AppError('OpenAI API is not configured. Please set OPENAI_API_KEY in environment variables.', 500);
+      }
+
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({
+          success: false,
+          errors: errors.array()
+        });
+      }
+
+      const { targetType, targetId, enhancementRequest } = req.body;
+      
+      console.log('🎯 Enhancing', targetType, 'with ID:', targetId);
+      
+      // Get the current data based on target type
+      let currentData: any = null;
+      
+      if (targetType === 'module') {
+        const { data } = await req.supabase!
+          .from('modules')
+          .select('*, user_stories(*, features(*))')
+          .eq('id', targetId)
+          .single();
+        currentData = data;
+      } else if (targetType === 'userStory') {
+        const { data } = await req.supabase!
+          .from('user_stories')
+          .select('*, features(*)')
+          .eq('id', targetId)
+          .single();
+        currentData = data;
+      } else if (targetType === 'feature') {
+        const { data } = await req.supabase!
+          .from('features')
+          .select('*')
+          .eq('id', targetId)
+          .single();
+        currentData = data;
+      }
+      
+      if (!currentData) {
+        throw new AppError('Target not found', 404);
+      }
+      
+      // Enhance using DYNAMIC_PROMPT
+      const enhancedData = await enhanceWithDynamicPrompt(currentData, targetType, enhancementRequest);
+      
+      console.log('✅ Enhancement completed');
+      
+      res.json({
+        success: true,
+        data: enhancedData
+      });
     } catch (error) {
       next(error);
     }
@@ -766,8 +934,15 @@ router.post(
         uiUxGuidelines: undefined // Will be fetched from project_information if needed
       };
 
+      // Get application type from project
+      const appTypeRes = await req.supabase!
+        .from('projects')
+        .select('application_type')
+        .eq('id', projectId)
+        .single();
+
       // Generate design prompts
-      const designPrompts = await generateDesignPrompts(projectData);
+      const designPrompts = await generateDesignPrompts(projectData, appTypeRes.data?.application_type);
 
       res.json({
         success: true,
@@ -778,6 +953,174 @@ router.post(
     }
   }
 );
+
+// Helper function to save parsed data to database
+async function saveParsedDataToDatabase(supabase: SupabaseClient, projectId: string, parsedData: ParsedBRD) {
+  console.log('💾 Saving parsed data to database for project:', projectId);
+  
+  try {
+    // Save modules
+    if (parsedData.modules && parsedData.modules.length > 0) {
+      console.log(`📦 Saving ${parsedData.modules.length} modules...`);
+      
+      for (const module of parsedData.modules) {
+        const moduleData = {
+          id: crypto.randomUUID(),
+          project_id: projectId,
+          module_name: module.moduleName,
+          description: module.moduleDescription,
+          priority: module.priority || 'Medium',
+          business_impact: module.businessImpact,
+          dependencies: module.dependencies?.join(', '),
+          status: 'Not Started'
+        };
+        
+        const { data: savedModule, error: moduleError } = await supabase
+          .from('modules')
+          .upsert(moduleData, { onConflict: 'id' })
+          .select()
+          .single();
+        
+        if (moduleError) {
+          console.error('❌ Error saving module:', moduleError);
+          continue;
+        }
+        
+        console.log(`✅ Module saved: ${module.moduleName}`);
+        
+        // Save user stories for this module
+        if (module.userStories && module.userStories.length > 0) {
+          console.log(`  Saving ${module.userStories.length} user stories for module: ${module.moduleName}`);
+          
+          for (const story of module.userStories) {
+            const storyData = {
+              id: crypto.randomUUID(),
+              project_id: projectId,
+              module_id: savedModule.id,
+              title: story.title,
+              user_role: story.userRole,
+              description: story.description,
+              acceptance_criteria: story.acceptanceCriteria?.join('\n'),
+              priority: story.priority || 'Medium',
+              status: 'Not Started'
+            };
+            
+            const { data: savedStory, error: storyError } = await supabase
+              .from('user_stories')
+              .upsert(storyData, { onConflict: 'id' })
+              .select()
+              .single();
+            
+            if (storyError) {
+              console.error('  ❌ Error saving user story:', storyError);
+              continue;
+            }
+            
+            console.log(`  ✅ User story saved: ${story.title}`);
+            
+            // Save features for this user story
+            if (story.features && story.features.length > 0) {
+              console.log(`    Saving ${story.features.length} features for story: ${story.title}`);
+              
+              for (const feature of story.features) {
+                const featureData = {
+                  id: crypto.randomUUID(),
+                  project_id: projectId,
+                  module_id: savedModule.id,
+                  user_story_id: savedStory.id,
+                  title: feature.featureName,
+                  description: feature.taskDescription,
+                  priority: feature.priority || 'Medium',
+                  estimated_hours: feature.estimated_hours ? parseInt(feature.estimated_hours) : null,
+                  status: 'Not Started'
+                };
+                
+                const { error: featureError } = await supabase
+                  .from('features')
+                  .upsert(featureData, { onConflict: 'id' })
+                  .select();
+                
+                if (featureError) {
+                  console.error('    ❌ Error saving feature:', featureError);
+                } else {
+                  console.log(`    ✅ Feature saved: ${feature.featureName}`);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    // Save global business rules
+    if (parsedData.businessRules && parsedData.businessRules.length > 0) {
+      console.log(`📋 Saving ${parsedData.businessRules.length} business rules...`);
+      
+      const businessRulesConfig = {
+        categories: parsedData.businessRules.map((rule: any) => ({
+          id: crypto.randomUUID(),
+          name: 'General',
+          rules: [rule]
+        }))
+      };
+      
+      const { error: rulesError } = await supabase
+        .from('business_rules')
+        .upsert({
+          project_id: projectId,
+          config: businessRulesConfig,
+          apply_to_all_project: true
+        }, { onConflict: 'project_id' });
+      
+      if (rulesError) {
+        console.error('❌ Error saving business rules:', rulesError);
+      } else {
+        console.log('✅ Business rules saved');
+      }
+    }
+    
+    // Save tech stack suggestions
+    if (parsedData.techStackSuggestions) {
+      console.log('💻 Saving tech stack suggestions...');
+      
+      const { error: techError } = await supabase
+        .from('tech_stack')
+        .upsert({
+          project_id: projectId,
+          tech_stack: parsedData.techStackSuggestions
+        }, { onConflict: 'project_id' });
+      
+      if (techError) {
+        console.error('❌ Error saving tech stack:', techError);
+      } else {
+        console.log('✅ Tech stack saved');
+      }
+    }
+    
+    // Save UI/UX guidelines
+    if (parsedData.uiUxGuidelines) {
+      console.log('🎨 Saving UI/UX guidelines...');
+      
+      const { error: uiError } = await supabase
+        .from('uiux_guidelines')
+        .upsert({
+          project_id: projectId,
+          guidelines: parsedData.uiUxGuidelines
+        }, { onConflict: 'project_id' });
+      
+      if (uiError) {
+        console.error('❌ Error saving UI/UX guidelines:', uiError);
+      } else {
+        console.log('✅ UI/UX guidelines saved');
+      }
+    }
+    
+    console.log('✅ All parsed data saved successfully');
+  } catch (error) {
+    console.error('❌ Error saving parsed data:', error);
+    throw error;
+  }
+}
 
 export default router;
 

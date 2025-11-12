@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 import { BRD_PROJECT_OVERVIEW, BRD_PARSER_SYSTEM_PROMPT, DYNAMIC_PROMPT, STRUCT_TO_PROMPT } from '../config/prompts';
-import { ParsedBRD, ProjectOverview, EnhancementRequest, EnhancementResponse } from '../types/brd.types';
+import { ParsedBRD, ProjectOverview, EnhancementRequest, EnhancementResponse, ApplicationType, DevelopmentType } from '../types/brd.types';
 
 // Initialize OpenRouter client (compatible with OpenAI SDK)
 const openai = new OpenAI({
@@ -15,7 +15,7 @@ const openai = new OpenAI({
 /**
  * Analyze BRD content to extract project overview only
  */
-export async function analyzeProjectOverview(brdContent: string): Promise<ProjectOverview> {
+export async function analyzeProjectOverview(brdContent: string): Promise<{ projectOverview: ProjectOverview; ApplicationType: ApplicationType }> {
   try {
     console.log('🤖 Analyzing BRD for project overview with', process.env.OPENROUTER_MODEL);
     console.log(`📄 Content length: ${brdContent.length} characters`);
@@ -41,13 +41,57 @@ export async function analyzeProjectOverview(brdContent: string): Promise<Projec
       throw new Error('No response from OpenAI for project overview');
     }
 
-    const result = JSON.parse(cleanJsonResponse(content)) as { projectOverview: ProjectOverview };
-    console.log('✅ Project Overview analyzed successfully');
+    const result = JSON.parse(cleanJsonResponse(content)) as { projectOverview: ProjectOverview; ApplicationType: ApplicationType };
+    console.log('✅ Project Overview and ApplicationType analyzed successfully');
 
-    return result.projectOverview;
+    return result;
   } catch (error: any) {
     console.error('❌ Error analyzing project overview:', error.message);
     throw new Error(`Failed to analyze project overview: ${error.message}`);
+  }
+}
+
+/**
+ * Parse project details using project overview
+ */
+export async function parseBRDWithProjectOverview(projectOverview: any): Promise<ParsedBRD> {
+  try {
+    console.log('🤖 Parsing project details with BRD_PARSER_SYSTEM_PROMPT');
+    
+    const response = await openai.chat.completions.create({
+      model: process.env.OPENROUTER_MODEL || 'openai/gpt-4-turbo-preview',
+      messages: [
+        {
+          role: 'system',
+          content: BRD_PARSER_SYSTEM_PROMPT
+        },
+        {
+          role: 'user',
+          content: `Given the following Project Overview:
+${JSON.stringify(projectOverview, null, 2)}
+
+ApplicationType: ${projectOverview.ApplicationType || 'Web Application'}
+
+Please generate comprehensive modules, user stories, features, business rules, techStackSuggestions and uiUxGuidelines based on the project overview.`
+        }
+      ],
+      temperature: 0.3,
+      response_format: { type: 'json_object' }
+    });
+    
+    const content = response.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error('No response from OpenAI');
+    }
+    
+    const parsedData = JSON.parse(cleanJsonResponse(content)) as ParsedBRD;
+    
+    console.log(`✅ Project details parsed with ${parsedData.modules?.length || 0} modules`);
+    
+    return parsedData;
+  } catch (error: any) {
+    console.error('❌ Error parsing project details:', error.message);
+    throw new Error(`Failed to parse project details: ${error.message}`);
   }
 }
 
@@ -82,8 +126,9 @@ export async function parseBRDDocument(brdContent: string): Promise<ParsedBRD> {
       throw new Error('No response from OpenAI for project overview');
     }
 
-    const projectOverview = JSON.parse(cleanJsonResponse(overviewContent)) as { projectOverview: ProjectOverview };
-    console.log('✅ Project Overview extracted');
+    const overviewResult = JSON.parse(cleanJsonResponse(overviewContent)) as { projectOverview: ProjectOverview; ApplicationType: ApplicationType };
+    console.log('✅ Project Overview and ApplicationType extracted');
+    console.log(`📱 ApplicationType: ${overviewResult.ApplicationType}`);
 
     // Step 2: Extract Modules, User Stories, Features, and Generate Suggestions
     console.log('📋 Step 2: Extracting detailed structure and generating suggestions...');
@@ -97,12 +142,14 @@ export async function parseBRDDocument(brdContent: string): Promise<ParsedBRD> {
         {
           role: 'user',
           content: `Given the following Project Overview:
-${JSON.stringify(projectOverview.projectOverview, null, 2)}
+${JSON.stringify(overviewResult.projectOverview, null, 2)}
+
+ApplicationType: ${overviewResult.ApplicationType}
 
 And the original BRD document:
 ${brdContent}
 
-Please extract all modules, user stories, features, business rules, and generate techStackSuggestions and uiUxGuidelines based on the requirements.`
+Please extract all modules, user stories, features, business rules, and generate techStackSuggestions and uiUxGuidelines based on the requirements and ApplicationType.`
         }
       ],
       temperature: 0.3,
@@ -118,7 +165,8 @@ Please extract all modules, user stories, features, business rules, and generate
     
     // Combine both results
     const parsedData: ParsedBRD = {
-      projectOverview: projectOverview.projectOverview,
+      projectOverview: overviewResult.projectOverview,
+      ApplicationType: overviewResult.ApplicationType,
       modules: projectDetails.modules || [],
       businessRules: projectDetails.businessRules || [],
       techStackSuggestions: projectDetails.techStackSuggestions,
@@ -164,7 +212,7 @@ ${request.enhancementRequest}
 Please analyze, locate the target, apply the enhancement, and output ONLY the updated JSON object for the target level.`
         }
       ],
-      temperature: 0.4,
+      temperature: 0.3,
       response_format: { type: 'json_object' }
     });
 
@@ -203,49 +251,56 @@ Please analyze, locate the target, apply the enhancement, and output ONLY the up
 }
 
 /**
- * Generate AI prompt for Vibe Engineers
+ * Generate AI prompt for Vibe Engineers using STRUCT_TO_PROMPT
  */
 export async function generateContextualPrompt(
-  _projectId: string, // Prefixed with underscore to indicate intentionally unused
+  _projectId: string, // Will be used for fetching additional data in future
   projectData: any,
-  promptType: string
+  developmentType: DevelopmentType | string, // Can be DevelopmentType or custom string
+  previousOutputs: string[] = []
 ): Promise<string> {
   try {
-    console.log(`🤖 Generating ${promptType} prompt...`);
+    console.log(`🤖 Generating ${developmentType} prompt using STRUCT_TO_PROMPT...`);
 
-    // Build context from project data
-    const context = `
-Project: ${projectData.name || 'Unnamed Project'}
-Description: ${projectData.description || 'No description'}
+    // Fetch complete project data including BRD parsed data
+    const parsedBRD: ParsedBRD = {
+      projectOverview: {
+        projectName: projectData.name || 'Unnamed Project',
+        projectDescription: projectData.description || 'No description',
+        businessIntent: {
+          vision: projectData.vision || '',
+          purpose: projectData.purpose || '',
+          objectives: projectData.objectives?.split('\n').filter(Boolean) || [],
+          projectScope: {
+            inScope: projectData.projectScope?.inScope || [],
+            outOfScope: projectData.projectScope?.outOfScope || []
+          }
+        },
+        requirements: {
+          functional: projectData.functionalRequirements?.split('\n').filter(Boolean) || [],
+          nonFunctional: projectData.nonFunctionalRequirements?.split('\n').filter(Boolean) || [],
+          integration: projectData.integrationRequirements?.split('\n').filter(Boolean) || [],
+          reporting: projectData.reportingRequirements?.split('\n').filter(Boolean) || []
+        }
+      },
+      ApplicationType: projectData.application_type as ApplicationType || 'Web Application',
+      modules: projectData.modules || [],
+      businessRules: projectData.businessRules || [],
+      techStackSuggestions: projectData.techStack,
+      uiUxGuidelines: projectData.uiuxGuidelines
+    };
 
-Modules: ${projectData.modules?.length || 0}
-User Stories: ${projectData.userStories?.length || 0}
-Features: ${projectData.features?.length || 0}
-    `.trim();
-
+    // Use STRUCT_TO_PROMPT with proper parameters
     const response = await openai.chat.completions.create({
       model: process.env.OPENROUTER_MODEL || 'openai/gpt-4-turbo-preview',
       messages: [
         {
           role: 'system',
-          content: 'You are an expert software developer assistant. Generate detailed, context-aware prompts for developers to build features based on project requirements.'
+          content: STRUCT_TO_PROMPT
         },
         {
           role: 'user',
-          content: `Generate a comprehensive development prompt for this project:
-
-${context}
-
-Prompt Type: ${promptType}
-
-The prompt should include:
-1. Project context and requirements
-2. Technical specifications
-3. Implementation guidelines
-4. Testing requirements
-5. Code examples where relevant
-
-Format the output as a detailed prompt that a developer can use with AI coding assistants.`
+          content: `ProjectJSON: ${JSON.stringify(parsedBRD, null, 2)}\n\nApplicationType: ${developmentType}\n\nPreviousOutputs: ${JSON.stringify(previousOutputs)}`
         }
       ],
       temperature: 0.7
@@ -253,12 +308,60 @@ Format the output as a detailed prompt that a developer can use with AI coding a
 
     const generatedPrompt = response.choices[0]?.message?.content || 'Failed to generate prompt';
 
-    console.log('✅ Prompt generated');
+    console.log(`✅ ${developmentType} prompt generated using STRUCT_TO_PROMPT`);
     
     return generatedPrompt;
   } catch (error: any) {
     console.error('❌ Error generating prompt:', error.message);
     throw new Error(`Failed to generate prompt: ${error.message}`);
+  }
+}
+
+/**
+ * Enhance data using DYNAMIC_PROMPT
+ */
+export async function enhanceWithDynamicPrompt(
+  currentData: any,
+  targetType: 'module' | 'userStory' | 'feature',
+  enhancementRequest: string
+): Promise<any> {
+  try {
+    console.log('🤖 Enhancing with DYNAMIC_PROMPT');
+    
+    const response = await openai.chat.completions.create({
+      model: process.env.OPENROUTER_MODEL || 'openai/gpt-4-turbo-preview',
+      messages: [
+        {
+          role: 'system',
+          content: DYNAMIC_PROMPT
+        },
+        {
+          role: 'user',
+          content: `Enhancement Request: ${enhancementRequest}
+
+Target Type: ${targetType}
+
+Current Data:
+${JSON.stringify(currentData, null, 2)}`
+        }
+      ],
+      temperature: 0.3,
+      response_format: { type: 'json_object' }
+    });
+    
+    const content = response.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error('No response from OpenAI');
+    }
+    
+    const enhancedData = JSON.parse(cleanJsonResponse(content));
+    
+    console.log('✅ Enhancement completed');
+    
+    return enhancedData;
+  } catch (error: any) {
+    console.error('❌ Error enhancing with DYNAMIC_PROMPT:', error.message);
+    throw new Error(`Failed to enhance: ${error.message}`);
   }
 }
 
@@ -272,9 +375,11 @@ export function isOpenAIConfigured(): boolean {
 /**
  * Generate design prompts for different application types
  */
-export async function generateDesignPrompts(projectData: ParsedBRD): Promise<string> {
+export async function generateDesignPrompts(projectData: ParsedBRD, applicationType?: string): Promise<string> {
   try {
     console.log('🎨 Generating design prompts...');
+    const appType = applicationType || projectData.ApplicationType || 'Web Application';
+    console.log(`📱 ApplicationType: ${appType}`);
 
     const response = await openai.chat.completions.create({
       model: process.env.OPENROUTER_MODEL || 'openai/gpt-4-turbo-preview',
@@ -285,7 +390,7 @@ export async function generateDesignPrompts(projectData: ParsedBRD): Promise<str
         },
         {
           role: 'user',
-          content: `Based on the following project structure, generate the four design prompts:\n\n${JSON.stringify(projectData, null, 2)}`
+          content: `ProjectJSON: ${JSON.stringify(projectData, null, 2)}\n\nApplicationType: ${appType}\n\nPreviousOutputs: []\n\nGenerate a comprehensive prompt for building the ${appType}.`
         }
       ],
       temperature: 0.7
