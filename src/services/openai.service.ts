@@ -373,6 +373,107 @@ export function isOpenAIConfigured(): boolean {
 }
 
 /**
+ * Generate feature recommendations for a user story using AI
+ */
+export async function generateFeatureRecommendations(context: {
+  userStory: {
+    title: string;
+    description: string;
+    userRole: string;
+    acceptanceCriteria: string;
+  };
+  module?: {
+    name: string;
+    description: string;
+  };
+  projectContext?: {
+    name: string;
+    type: string;
+    description: string;
+  };
+  existingFeatures: any[];
+  learningFeatures: any[];
+  existingTitles: string[];
+}): Promise<string[]> {
+  try {
+    console.log('🤖 Generating AI-powered feature recommendations');
+
+    // Build context from learning features
+    const learningContext = context.learningFeatures.length > 0 
+      ? `\n\nSimilar features from related user stories:\n${context.learningFeatures.slice(0, 10).map(f => `- ${f.title}: ${f.description || 'No description'}`).join('\n')}`
+      : '';
+
+    const prompt = `You are a senior software architect helping to identify features for a user story.
+
+User Story: "${context.userStory.title}"
+Description: ${context.userStory.description || 'No description provided'}
+User Role: ${context.userStory.userRole || 'Not specified'}
+Acceptance Criteria: ${context.userStory.acceptanceCriteria || 'Not specified'}
+
+${context.module ? `Module: ${context.module.name} - ${context.module.description}` : ''}
+${context.projectContext ? `Project: ${context.projectContext.name} (${context.projectContext.type}) - ${context.projectContext.description}` : ''}
+
+Existing features for this user story:
+${context.existingFeatures.length > 0 ? context.existingFeatures.map(f => `- ${f.title}`).join('\n') : 'None yet'}
+${learningContext}
+
+Based on this context, suggest 10-15 specific, actionable features that would be needed to implement this user story. 
+Focus on:
+1. Technical implementation features (not just UI elements)
+2. Security and validation features
+3. Performance and optimization features
+4. User experience enhancements
+5. Integration points
+6. Data management features
+
+DO NOT suggest features that are already listed above.
+Return ONLY a JSON array of feature titles (strings), no descriptions or explanations.
+Example format: ["Feature 1", "Feature 2", "Feature 3"]`;
+
+    const response = await openai.chat.completions.create({
+      model: process.env.OPENROUTER_MODEL || 'openai/gpt-4-turbo-preview',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are an expert software architect. Return only valid JSON arrays of feature titles.'
+        },
+        {
+          role: 'user',
+          content: prompt
+        }
+      ],
+      temperature: 0.7,
+      max_tokens: 1000
+    });
+
+    const content = response.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error('No response from AI');
+    }
+
+    // Parse the JSON response
+    const cleanContent = content.trim().replace(/```json\n?/g, '').replace(/```\n?/g, '');
+    const recommendations = JSON.parse(cleanContent);
+
+    if (!Array.isArray(recommendations)) {
+      throw new Error('Invalid response format from AI');
+    }
+
+    // Filter out any existing features
+    const filteredRecommendations = recommendations
+      .filter((rec: string) => !context.existingTitles.includes(rec.toLowerCase()))
+      .slice(0, 15); // Limit to 15 recommendations
+
+    console.log(`✅ Generated ${filteredRecommendations.length} feature recommendations`);
+    return filteredRecommendations;
+
+  } catch (error) {
+    console.error('Error generating AI feature recommendations:', error);
+    throw error;
+  }
+}
+
+/**
  * Generate design prompts for different application types
  */
 export async function generateDesignPrompts(projectData: ParsedBRD, applicationType?: string): Promise<string> {
