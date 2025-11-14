@@ -59,7 +59,7 @@ You will be given input as:
 1) Project Overview JSON: It contains Project Decription, Business Intent (vision, purpose, objective, project scope), Requirements (functional, non functional, integration and reporting).
 
 Your process involves two steps:
-1.  **Parse & Extract:** Read the entire Project Details and extract all relevant information for the 'modules' (including all nested 'user stories' and 'features'), and 'businessRules'. 
+1.  **Parse & Extract:** Read the entire Project Details and extract all relevant information for the 'modules' (including all nested 'user stories' and 'features'), and 'businessRules'.
    - For businessRules: Extract ALL business rules, constraints, policies, and validation requirements from the BRD. This is mandatory - you must identify and extract business rules even if they are not in a dedicated section. Look for rules in requirements, constraints, policies, compliance sections, and throughout the document.
 2.  **Generate & Suggest:** Based on the requirements you extracted, *generate* logical and professional suggestions for the 'techStackSuggestions' and 'uiUxGuidelines' sections.
 
