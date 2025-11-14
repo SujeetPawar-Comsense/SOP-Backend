@@ -18,6 +18,18 @@ export const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
   }
 });
 
+// Public client for auth operations (will send emails)
+export const supabasePublic = createClient(
+  supabaseUrl,
+  process.env.SUPABASE_ANON_KEY!,
+  {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false
+    }
+  }
+);
+
 // Create client for user-specific operations (respects RLS)
 export const createUserClient = (accessToken: string) => {
   return createClient(supabaseUrl, process.env.SUPABASE_ANON_KEY!, {

@@ -1,6 +1,6 @@
-import { Router } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { body, validationResult } from 'express-validator';
-import supabaseAdmin from '../config/supabase';
+import supabaseAdmin, { supabasePublic } from '../config/supabase';
 import { AppError } from '../middleware/errorHandler';
 
 const router = Router();
@@ -17,7 +17,7 @@ router.post(
     body('name').notEmpty().withMessage('Name is required'),
     body('role').isIn(['project_owner', 'vibe_engineer']).withMessage('Invalid role')
   ],
-  async (req, res, next) => {
+  async (req: Request, res: Response, next: NextFunction) => {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
@@ -40,14 +40,16 @@ router.post(
         throw new AppError('User already exists with this email', 400);
       }
 
-      // Create user in Supabase Auth
-      const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
+      // Use public client to sign up (this automatically sends verification email)
+      const { data: authData, error: authError } = await supabasePublic.auth.signUp({
         email,
         password,
-        email_confirm: true, // Auto-confirm email
-        user_metadata: {
-          name,
-          role
+        options: {
+          data: {
+            name,
+            role
+          },
+          emailRedirectTo: process.env.SITE_URL || 'http://localhost:5173'
         }
       });
 
@@ -61,6 +63,7 @@ router.post(
       }
 
       console.log('✅ Auth user created:', authData.user.id);
+      console.log('✅ Verification email automatically sent to:', email);
 
       // Check if profile already exists (in case trigger created it)
       let profileData = null;
@@ -118,7 +121,8 @@ router.post(
 
       res.status(201).json({
         success: true,
-        message: 'User created successfully',
+        message: 'User created successfully. Please check your email to verify your account.',
+        requiresVerification: true,
         user: {
           id: authData.user.id,
           email: authData.user.email,
@@ -141,7 +145,7 @@ router.post(
     body('email').isEmail(),
     body('password').notEmpty()
   ],
-  async (req, res, next) => {
+  async (req: Request, res: Response, next: NextFunction) => {
     try {
       const errors = validationResult(req);
       if (!errors.isEmpty()) {
@@ -153,6 +157,16 @@ router.post(
 
       const { email, password } = req.body;
 
+      // First, try to get user to check verification status
+      const { data: users } = await supabaseAdmin.auth.admin.listUsers();
+      const existingUser = users.users.find(u => u.email === email);
+
+      // If user exists, check if email is verified
+      if (existingUser && !existingUser.email_confirmed_at) {
+        throw new AppError('Please verify your email before signing in. Check your inbox for the verification link.', 403);
+      }
+
+      // Now try to sign in
       const { data, error } = await supabaseAdmin.auth.signInWithPassword({
         email,
         password
@@ -177,7 +191,7 @@ router.post(
  * POST /api/auth/signout
  * Sign out current user
  */
-router.post('/signout', async (req, res, next) => {
+router.post('/signout', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const authHeader = req.headers.authorization;
     
@@ -203,10 +217,108 @@ router.post('/signout', async (req, res, next) => {
 });
 
 /**
+ * POST /api/auth/resend-verification
+ * Resend verification email
+ */
+router.post(
+  '/resend-verification',
+  [
+    body('email').isEmail().withMessage('Valid email is required')
+  ],
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({
+          success: false,
+          errors: errors.array()
+        });
+      }
+
+      const { email } = req.body;
+
+      // Get user by email
+      const { data: users, error: userError } = await supabaseAdmin.auth.admin.listUsers();
+      
+      if (userError) {
+        throw new AppError('Failed to lookup user', 500);
+      }
+
+      const user = users.users.find(u => u.email === email);
+
+      if (!user) {
+        // Don't reveal if user exists or not for security
+        return res.json({
+          success: true,
+          message: 'If an account with that email exists and is unverified, a verification email has been sent.'
+        });
+      }
+
+      // Check if already verified
+      if (user.email_confirmed_at) {
+        throw new AppError('Email is already verified. Please sign in.', 400);
+      }
+
+      // Use Supabase to resend confirmation email
+      // Note: Supabase will automatically send the email if SMTP is configured
+      const { error } = await supabaseAdmin.auth.resend({
+        type: 'signup',
+        email: email,
+      });
+
+      if (error) {
+        console.error('Failed to resend verification email:', error);
+        throw new AppError('Failed to send verification email', 500);
+      }
+
+      res.json({
+        success: true,
+        message: 'Verification email sent. Please check your inbox.'
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * GET /api/auth/verify
+ * Verify email with token
+ */
+router.get('/verify', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { token, type } = req.query;
+
+    if (!token || typeof token !== 'string') {
+      throw new AppError('Verification token is required', 400);
+    }
+
+    // Verify the token using Supabase
+    const { data, error } = await supabaseAdmin.auth.verifyOtp({
+      token_hash: token,
+      type: type === 'email' ? 'email' : 'signup'
+    });
+
+    if (error) {
+      console.error('Verification error:', error);
+      throw new AppError('Invalid or expired verification link', 400);
+    }
+
+    res.json({
+      success: true,
+      message: 'Email verified successfully! You can now sign in.',
+      user: data.user
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
  * GET /api/auth/me
  * Get current user profile
  */
-router.get('/me', async (req, res, next) => {
+router.get('/me', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const authHeader = req.headers.authorization;
 
