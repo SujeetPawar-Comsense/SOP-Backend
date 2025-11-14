@@ -188,6 +188,100 @@ router.post(
 );
 
 /**
+ * POST /api/auth/forgot-password
+ * Send password reset email
+ */
+router.post(
+  '/forgot-password',
+  [
+    body('email').isEmail().withMessage('Valid email is required')
+  ],
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({
+          success: false,
+          errors: errors.array()
+        });
+      }
+
+      const { email } = req.body;
+
+      // Use public client to send password reset email
+      // Supabase will append #access_token=...&type=recovery to the redirect URL
+      const { error } = await supabasePublic.auth.resetPasswordForEmail(email, {
+        redirectTo: `${process.env.SITE_URL || 'http://localhost:5173'}`
+      });
+
+      if (error) {
+        console.error('Password reset error:', error);
+        // Don't reveal if user exists for security
+        // Still return success to prevent email enumeration
+      }
+
+      // Always return success to prevent email enumeration
+      res.json({
+        success: true,
+        message: 'If an account with that email exists, a password reset link has been sent.'
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /api/auth/reset-password
+ * Reset password with token
+ */
+router.post(
+  '/reset-password',
+  [
+    body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
+    body('access_token').notEmpty().withMessage('Access token is required')
+  ],
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({
+          success: false,
+          errors: errors.array()
+        });
+      }
+
+      const { password, access_token } = req.body;
+
+      // Set the session with the access token from the reset link
+      const { data: sessionData, error: sessionError } = await supabaseAdmin.auth.getUser(access_token);
+      
+      if (sessionError || !sessionData.user) {
+        throw new AppError('Invalid or expired reset token', 400);
+      }
+
+      // Update the user's password
+      const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(
+        sessionData.user.id,
+        { password }
+      );
+
+      if (updateError) {
+        console.error('Password update error:', updateError);
+        throw new AppError('Failed to update password', 500);
+      }
+
+      res.json({
+        success: true,
+        message: 'Password updated successfully. You can now sign in with your new password.'
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
  * POST /api/auth/signout
  * Sign out current user
  */
