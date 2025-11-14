@@ -59,7 +59,8 @@ You will be given input as:
 1) Project Overview JSON: It contains Project Decription, Business Intent (vision, purpose, objective, project scope), Requirements (functional, non functional, integration and reporting).
 
 Your process involves two steps:
-1.  **Parse & Extract:** Read the entire Project Details and extract all relevant information for the 'modules' (including all nested 'user stories' and 'features'), and 'businessRules'.
+1.  **Parse & Extract:** Read the entire Project Details and extract all relevant information for the 'modules' (including all nested 'user stories' and 'features'), and 'businessRules'. 
+   - For businessRules: Extract ALL business rules, constraints, policies, and validation requirements from the BRD. This is mandatory - you must identify and extract business rules even if they are not in a dedicated section. Look for rules in requirements, constraints, policies, compliance sections, and throughout the document.
 2.  **Generate & Suggest:** Based on the requirements you extracted, *generate* logical and professional suggestions for the 'techStackSuggestions' and 'uiUxGuidelines' sections.
 
 The final output must be a single JSON object adhering strictly to the structure defined below. Do not add any conversational text or explanations outside the final JSON block.
@@ -155,9 +156,24 @@ The final output must be a single JSON object adhering strictly to the structure
       ]
     }
   ],
-  "globalBusinessRules": [
-    "A global rule that applies across the entire system...",
-    "Another overarching business constraint or policy..."
+  "businessRules": [
+    {
+      "ruleName": "e.g., User Authentication Policy",
+      "ruleDescription": "A detailed description of the business rule, constraint, or policy. This should explain what the rule is, why it exists, and how it impacts the system. Extract rules from sections like 'Business Rules', 'Constraints', 'Policies', 'Validation Rules', 'Compliance Requirements', etc.",
+      "applicableTo": [
+        "e.g., All modules",
+        "e.g., User Management Module",
+        "e.g., Payment Processing Module"
+      ]
+    },
+    {
+      "ruleName": "e.g., Data Retention Policy",
+      "ruleDescription": "Another business rule extracted from the BRD. Look for rules in sections about data handling, security policies, compliance requirements, operational constraints, etc.",
+      "applicableTo": [
+        "e.g., Data Management Module",
+        "e.g., Reporting Module"
+      ]
+    }
   ],
   "techStackSuggestions": {
       "frontend": [
@@ -220,13 +236,27 @@ The final output must be a single JSON object adhering strictly to the structure
 
 IMPORTANT GUIDELINES:
 1.  **Generate Suggestions:** The 'techStackSuggestions' and 'uiUxGuidelines' sections are for **AI-generated advice**. You must create these suggestions based on the project's extracted requirements.
-3.  **Categorize Rules:** Identify and categorize business rules comprehensively.
+2.  **Extract Business Rules:** This is CRITICAL. You MUST extract business rules from the BRD. Look for:
+    - Sections explicitly titled "Business Rules", "Rules", "Policies", "Constraints"
+    - Validation rules (e.g., "Email must be unique", "Password must be at least 8 characters")
+    - Compliance requirements (e.g., "GDPR compliance required", "HIPAA standards must be met")
+    - Operational constraints (e.g., "System must be available 99.9% of the time")
+    - Data handling rules (e.g., "Personal data must be encrypted", "Data retention period is 7 years")
+    - Security policies (e.g., "All API calls must be authenticated", "Sensitive data cannot be logged")
+    - Business logic constraints (e.g., "Orders cannot be cancelled after shipping", "Refunds must be processed within 14 days")
+    - Regulatory requirements mentioned in the document
+    - Any "must", "shall", "should", "cannot", "must not" statements that define constraints
+    - Rules embedded in requirements, acceptance criteria, or feature descriptions
+    - If no explicit business rules section exists, extract implicit rules from the requirements and constraints mentioned throughout the document
+    - Each rule must have a clear ruleName (short, descriptive title), ruleDescription (detailed explanation), and applicableTo (array of modules or "All modules" if it applies globally)
+    - **DO NOT return an empty array for businessRules**. If you cannot find explicit rules, infer them from the requirements, constraints, and policies mentioned in the document.
+3.  **Categorize Rules:** Identify and categorize business rules comprehensively. Group related rules logically.
 4.  **Extract Actions:** Extract user interactions and system actions.
-5.  **Handle Missing Info:** If a section has no information in the document, use empty arrays '[]' or empty strings '""' (this does not apply to generated sections).
+5.  **Handle Missing Info:** If a section has no information in the document, use empty arrays '[]' or empty strings '""' (this does not apply to generated sections like techStackSuggestions, uiUxGuidelines, or businessRules - these should always be populated).
 6.  **Infer Priorities:** Infer "High/Medium/Low" priorities from context if not explicitly stated.
 7.  **Decompose:** Break down complex requirements into multiple user stories or features.
 8.  **Find Constraints:** Extract technical constraints, dependencies, and assumptions.
-9.  **Be Thorough:** Look for information throughout the entire document, including appendices and notes.
+9.  **Be Thorough:** Look for information throughout the entire document, including appendices, notes, and any referenced documents.
 
 Be extremely thorough in both extracting and generating information to create a complete project plan.
 `;
