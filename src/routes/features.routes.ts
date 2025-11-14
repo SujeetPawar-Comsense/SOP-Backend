@@ -24,7 +24,6 @@ router.get('/projects/:projectId/features', async (req: AuthRequest, res, next) 
   try {
     const { projectId } = req.params;
 
-    console.log('📖 Fetching features for project:', projectId);
 
     const { data: features, error } = await req.supabase!
       .from('features')
