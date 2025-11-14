@@ -41,16 +41,47 @@ router.post('/projects/:projectId/actions', async (req: AuthRequest, res, next) 
     const { projectId } = req.params;
     const { actions } = req.body;
 
-    const { data, error } = await req.supabase!
+    // Check if a record already exists for this project
+    const { data: existingData, error: checkError } = await req.supabase!
       .from('actions_interactions')
-      .upsert({
-        project_id: projectId,
-        config: actions,
-        apply_to_all_project: actions.applyToAllProjects || false,
-        specific_modules: actions.specificModules || []
-      })
-      .select()
+      .select('id')
+      .eq('project_id', projectId)
       .single();
+
+    let data, error;
+
+    if (existingData && !checkError) {
+      // Update existing record
+      const { data: updateData, error: updateError } = await req.supabase!
+        .from('actions_interactions')
+        .update({
+          config: actions,
+          apply_to_all_project: actions.applyToAllProjects || false,
+          specific_modules: actions.specificModules || [],
+          updated_at: new Date().toISOString()
+        })
+        .eq('project_id', projectId)
+        .select()
+        .single();
+
+      data = updateData;
+      error = updateError;
+    } else {
+      // Insert new record
+      const { data: insertData, error: insertError } = await req.supabase!
+        .from('actions_interactions')
+        .insert({
+          project_id: projectId,
+          config: actions,
+          apply_to_all_project: actions.applyToAllProjects || false,
+          specific_modules: actions.specificModules || []
+        })
+        .select()
+        .single();
+
+      data = insertData;
+      error = insertError;
+    }
 
     if (error) {
       throw new AppError(error.message, 400);
