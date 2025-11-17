@@ -7,6 +7,7 @@ import json
 import sys
 from typing import Dict, List, Optional
 from dotenv import load_dotenv
+from .business_rules_mapper import get_modules_for_rule
 
 # LangChain components
 from langchain_community.vectorstores import FAISS
@@ -22,8 +23,11 @@ from langchain_core.documents import Document
 # __file__ is Backend/src/rag/service.py, so we go up 2 levels to get Backend/
 _backend_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DB_DIR = os.path.join(_backend_root, "rag_db")
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDING_MODEL = "nomic-ai/nomic-embed-text-v1.5"
 OPENROUTER_MODEL = "openai/gpt-4o-mini"
+
+# Debug mode - set to True to see retrieved chunks
+DEBUG_MODE = os.getenv("RAG_DEBUG", "true").lower() == "true"
 
 # Global variables for caching
 _vector_store = None
@@ -33,252 +37,341 @@ _current_project_id = None
 
 def create_document_chunks(project_data: Dict) -> List[Document]:
     """
-    Creates document chunks from project data.
-    Similar to the original RAG implementation but works with database structure.
+    Creates optimized document chunks from project data.
+    Strategy: 
+    - One chunk for module names list
+    - One chunk per module with its user stories and features
+    - Separate chunks for project overview, tech stack, UI/UX, business rules
     """
     documents = []
     
-    # 1. Project Overview
+    # 1. Module Names List (Quick Reference Chunk - Names and Descriptions ONLY)
+    modules = project_data.get("modules", [])
+    if modules:
+        # Create a focused chunk that will match "list all modules" queries
+        module_list = "ALL MODULES IN THIS PROJECT - COMPLETE LIST OF MODULE NAMES:\n\n"
+        module_list += "This is the complete list of all modules in the project.\n"
+        module_list += f"Total number of modules: {len(modules)}\n\n"
+        module_list += "MODULE NAMES AND DESCRIPTIONS:\n"
+        
+        # List all module names first for quick reference
+        module_list += "\nQuick List of Module Names:\n"
+        module_names = [m.get('module_name', 'Unnamed') for m in modules]
+        module_list += f"• {', '.join(module_names)}\n\n"
+        
+        # Then detailed list with descriptions
+        module_list += "Detailed Module List:\n"
+        for i, module in enumerate(modules, 1):
+            module_list += f"\n{i}. MODULE NAME: {module.get('module_name', 'Unnamed')}\n"
+            module_list += f"   Description: {module.get('description', 'No description available')}\n"
+            module_list += f"   Priority: {module.get('priority', 'Not specified')}\n"
+        
+        module_list += f"\n===== END OF MODULE LIST =====\n"
+        module_list += f"Total Modules in Project: {len(modules)}\n"
+        module_list += "Note: For detailed information about any module including user stories and features, refer to individual module chunks."
+        
+        documents.append(Document(
+            page_content=module_list,
+            metadata={
+                "source": "Module List Overview", 
+                "type": "module_list",
+                "keywords": "all modules, module list, complete list, module names, list of modules",
+                "priority": "high"
+            }
+        ))
+    
+    # 2. User Stories List (Names Only - Quick Reference)
+    user_stories = project_data.get("user_stories", [])
+    if user_stories:
+        stories_list = "ALL USER STORIES IN THIS PROJECT - COMPLETE LIST:\n\n"
+        stories_list += f"Total number of user stories: {len(user_stories)}\n\n"
+        stories_list += "USER STORY TITLES:\n"
+        for i, story in enumerate(user_stories, 1):
+            stories_list += f"{i}. {story.get('title', 'Unnamed Story')} (Priority: {story.get('priority', 'N/A')}, Status: {story.get('status', 'N/A')})\n"
+        stories_list += f"\n===== END OF USER STORIES LIST =====\n"
+        stories_list += f"Total User Stories: {len(user_stories)}\n"
+        
+        documents.append(Document(
+            page_content=stories_list,
+            metadata={
+                "source": "User Stories List",
+                "type": "stories_list",
+                "keywords": "all user stories, user story list, complete list",
+                "priority": "high"
+            }
+        ))
+    
+    # 3. Features List (Names Only - Quick Reference)
+    features = project_data.get("features", [])
+    if features:
+        features_list = "ALL FEATURES IN THIS PROJECT - COMPLETE LIST:\n\n"
+        features_list += f"Total number of features: {len(features)}\n\n"
+        features_list += "FEATURE TITLES:\n"
+        for i, feature in enumerate(features, 1):
+            features_list += f"{i}. {feature.get('title', 'Unnamed Feature')} (Priority: {feature.get('priority', 'N/A')}, Status: {feature.get('status', 'N/A')})\n"
+        features_list += f"\n===== END OF FEATURES LIST =====\n"
+        features_list += f"Total Features: {len(features)}\n"
+        
+        documents.append(Document(
+            page_content=features_list,
+            metadata={
+                "source": "Features List",
+                "type": "features_list", 
+                "keywords": "all features, feature list, complete list",
+                "priority": "high"
+            }
+        ))
+    
+    # 4. Individual Module Chunks (Each module with its user stories and features)
+    
+    for module in modules:
+        module_id = module.get('id')
+        module_name = module.get('module_name', 'Unnamed Module')
+        
+        # Build module chunk with nested data
+        chunk_content = f"Module: {module_name}\n"
+        chunk_content += f"Description: {module.get('description', 'N/A')}\n"
+        chunk_content += f"Priority: {module.get('priority', 'N/A')}\n"
+        chunk_content += f"Business Impact: {module.get('business_impact', 'N/A')}\n\n"
+        
+        # Get user stories for this module
+        module_stories = [us for us in user_stories if us.get('module_id') == module_id]
+        
+        if module_stories:
+            chunk_content += f"User Stories ({len(module_stories)} total):\n"
+            for story in module_stories:
+                story_id = story.get('id')
+                chunk_content += f"\n  • {story.get('title', 'N/A')}\n"
+                chunk_content += f"    Role: {story.get('user_role', 'N/A')}\n"
+                chunk_content += f"    Description: {story.get('description', 'N/A')}\n"
+                chunk_content += f"    Priority: {story.get('priority', 'N/A')}, Status: {story.get('status', 'N/A')}\n"
+                
+                # Get features for this user story
+                story_features = [f for f in features if f.get('user_story_id') == story_id]
+                if story_features:
+                    chunk_content += f"    Features:\n"
+                    for feature in story_features:
+                        chunk_content += f"      - {feature.get('title', 'N/A')} (Priority: {feature.get('priority', 'N/A')}, Status: {feature.get('status', 'N/A')})\n"
+        else:
+            chunk_content += "User Stories: None defined yet\n"
+        
+        # Create chunk for this module
+        documents.append(Document(
+            page_content=chunk_content,
+            metadata={"source": "Module Detail", "module_name": module_name, "module_id": module_id}
+        ))
+    
+    # 5. Project Overview (Single Chunk)
     project_info = project_data.get("project_information", {})
-    if project_info:
-        overview_content = (
-            f"Project Overview:\n"
-            f"Vision: {project_info.get('vision', 'N/A')}\n"
-            f"Purpose: {project_info.get('purpose', 'N/A')}\n"
-            f"Objectives: {project_info.get('objectives', 'N/A')}\n"
-            f"Functional Requirements: {project_info.get('functional_requirements', 'N/A')}\n"
-            f"Non-Functional Requirements: {project_info.get('non_functional_requirements', 'N/A')}\n"
-            f"Integration Requirements: {project_info.get('integration_requirements', 'N/A')}\n"
-            f"Reporting Requirements: {project_info.get('reporting_requirements', 'N/A')}"
-        )
+    project = project_data.get("project", {})
+    if project_info or project:
+        overview_content = "Project Overview:\n\n"
+        if project:
+            overview_content += f"Project Name: {project.get('name', 'N/A')}\n"
+            overview_content += f"Application Type: {project.get('application_type', 'N/A')}\n\n"
+        if project_info:
+            overview_content += f"Vision: {project_info.get('vision', 'N/A')}\n"
+            overview_content += f"Purpose: {project_info.get('purpose', 'N/A')}\n"
+            overview_content += f"Objectives: {project_info.get('objectives', 'N/A')}\n"
+            overview_content += f"Functional Requirements: {project_info.get('functional_requirements', 'N/A')}\n"
+            overview_content += f"Non-Functional Requirements: {project_info.get('non_functional_requirements', 'N/A')}\n"
+        
         documents.append(Document(
             page_content=overview_content,
-            metadata={"source": "Project Overview"}
+            metadata={"source": "Project Overview", "type": "overview"}
         ))
     
-    # 2. Business Rules
+    # 6. Global Business Rules (Project-level rules, distinct from feature-specific rules)
     business_rules = project_data.get("business_rules", {})
-    if business_rules and business_rules.get("categories"):
-        rules_content = "Business Rules:\n"
-        for category in business_rules.get("categories", []):
-            if isinstance(category, dict):
-                rules_content += f"- {category.get('name', 'Rule')}: {category.get('description', 'N/A')}\n"
+    if business_rules:
+        rules_content = "GLOBAL BUSINESS RULES (Project-level Rules):\n\n"
+        rules_content += "Note: These are project-wide business rules that apply across modules, distinct from feature-specific business rules.\n\n"
+        
+        # Debug: Print the structure to understand the data
+        if DEBUG_MODE:
+            print("DEBUG - Business Rules Structure:")
+            print(json.dumps(business_rules, indent=2)[:500])
+        
+        config = business_rules.get("config", business_rules)
+        
+        # Handle different possible structures
+        if config:
+            # Check if categories exist
+            categories = config.get("categories", [])
+            if categories:
+                for category in categories:
+                    if isinstance(category, dict):
+                        category_name = category.get('name', 'Category')
+                        category_desc = category.get('description', '')
+                        applicable_modules = category.get('applicableTo', category.get('applicableModules', []))
+                        
+                        rules_content += f"\n{category_name}:\n"
+                        if category_desc:
+                            rules_content += f"{category_desc}\n"
+                        
+                        # Check for subcategories
+                        subcategories = category.get('subcategories', [])
+                        if subcategories:
+                            for subcat in subcategories:
+                                if isinstance(subcat, dict):
+                                    rule_name = subcat.get('name', 'Rule')
+                                    rule_desc = subcat.get('description', '')
+                                    rule_example = subcat.get('example', '')
+                                    # Check both possible field names
+                                    rule_modules = subcat.get('applicableTo', subcat.get('applicableModules', []))
+                                    
+                                    rules_content += f"  • {rule_name}"
+                                    if rule_desc:
+                                        rules_content += f": {rule_desc}"
+                                    rules_content += "\n"
+                                    
+                                    if rule_example:
+                                        rules_content += f"    Example: {rule_example}\n"
+                                    
+                                    if rule_modules and len(rule_modules) > 0:
+                                        rules_content += f"    📍 Applicable to Modules: {', '.join(rule_modules)}\n"
+                                    elif applicable_modules and len(applicable_modules) > 0:
+                                        # Use category-level modules if subcategory doesn't have them
+                                        rules_content += f"    📍 Applicable to Modules: {', '.join(applicable_modules)}\n"
+                                    else:
+                                        rules_content += f"    📍 Applicable to: All modules\n"
+                                    rules_content += "\n"
+                        else:
+                            # No subcategories, show the category itself as a rule
+                            if applicable_modules and len(applicable_modules) > 0:
+                                rules_content += f"  📍 Applicable to Modules: {', '.join(applicable_modules)}\n"
+                            rules_content += "\n"
+            
+            # Also check for direct rules array (alternative structure)
+            rules = config.get("rules", [])
+            if rules:
+                for rule in rules:
+                    if isinstance(rule, dict):
+                        rule_name = rule.get('name', rule.get('title', 'Rule'))
+                        rule_desc = rule.get('description', '')
+                        rule_modules = rule.get('applicableTo', rule.get('applicableModules', []))
+                        
+                        rules_content += f"• {rule_name}"
+                        if rule_desc:
+                            rules_content += f": {rule_desc}"
+                        rules_content += "\n"
+                        
+                        if rule_modules and len(rule_modules) > 0:
+                            rules_content += f"  📍 Applicable to Modules: {', '.join(rule_modules)}\n"
+                        else:
+                            rules_content += f"  📍 Applicable to: All modules\n"
+                        rules_content += "\n"
+        
+        # If no structured data found, parse plain text format
+        if len(rules_content) < 200:  # If we didn't get much from structured data
+            # Try to extract rules from various possible fields
+            rules_text = ""
+            if isinstance(business_rules, dict):
+                # Check different possible field names
+                for field in ['rules', 'content', 'text', 'description', 'value']:
+                    if field in business_rules:
+                        rules_text = str(business_rules[field])
+                        break
+                
+                # If still no text, check config
+                if not rules_text and config:
+                    for field in ['rules', 'content', 'text', 'description']:
+                        if field in config:
+                            rules_text = str(config[field])
+                            break
+            
+            # If we have rules text, parse it
+            if rules_text and len(rules_text) > 10:
+                rules_content = "GLOBAL BUSINESS RULES (Project-level Rules):\n\n"
+                rules_content += "Note: These are project-wide business rules that apply across modules, distinct from feature-specific business rules.\n\n"
+                
+                # Parse the plain text rules and add module mappings
+                rules_lines = rules_text.split('•')
+                if len(rules_lines) <= 1:
+                    # Try splitting by newlines if bullet points don't work
+                    rules_lines = [line for line in rules_text.split('\n') if line.strip() and ':' in line]
+                
+                for rule_line in rules_lines:
+                    if ':' in rule_line:
+                        parts = rule_line.split(':', 1)
+                        rule_name = parts[0].strip()
+                        rule_desc = parts[1].strip() if len(parts) > 1 else ""
+                        
+                        if rule_name:
+                            # Get applicable modules using our mapper
+                            applicable_modules = get_modules_for_rule(rule_name, rule_desc)
+                            
+                            rules_content += f"• {rule_name}: {rule_desc}\n"
+                            rules_content += f"  📍 Applicable to Modules: {', '.join(applicable_modules)}\n\n"
+                
+                # If parsing didn't work well, show the original text with a note
+                if rules_content.count('•') < 3:
+                    rules_content = "GLOBAL BUSINESS RULES (Project-level Rules):\n\n"
+                    rules_content += "Note: These are project-wide business rules. Module applicability has been inferred based on rule content.\n\n"
+                    
+                    # Show original text but add module mappings for known rules
+                    for rule_line in rules_text.split('\n'):
+                        if rule_line.strip():
+                            # Check if this line contains a known rule
+                            modules_found = []
+                            for known_rule in ["User Password Policy", "Unique User Identifiers", "Product Stock Availability",
+                                             "Order Stock Reservation", "Payment Gateway Compliance", "Order Status Workflow",
+                                             "Return Window Policy", "Refund Processing Time", "Seller Product Approval",
+                                             "Admin Action Logging", "Performance Threshold", "System Uptime",
+                                             "Scalability Requirements", "Data Security Compliance", "COD Restrictions",
+                                             "Reward Point Earning", "Reward Point Redemption"]:
+                                if known_rule.lower() in rule_line.lower():
+                                    modules_found = get_modules_for_rule(known_rule, rule_line)
+                                    break
+                            
+                            rules_content += rule_line + "\n"
+                            if modules_found:
+                                rules_content += f"  📍 Applicable to: {', '.join(modules_found)}\n"
+                            rules_content += "\n"
+        
+        if len(rules_content) < 100:  # If we got almost nothing
+            rules_content += "Business rules data structure not recognized. Raw data may be available in other formats.\n"
+        
+        rules_content += "\nNote: Individual features may have their own specific business rules. Check feature details for feature-level rules.\n"
+        
         documents.append(Document(
             page_content=rules_content,
-            metadata={"source": "Business Rules"}
+            metadata={"source": "Global Business Rules", "type": "global_rules", "keywords": "business rules, global rules, project rules"}
         ))
     
-    # 3. Tech Stack
+    # 7. Tech Stack (Single Chunk)
     tech_stack = project_data.get("tech_stack", {})
     if tech_stack:
-        # Extract tech_stack field if it's nested
         actual_stack = tech_stack.get('tech_stack', tech_stack) if isinstance(tech_stack, dict) else tech_stack
+        tech_content = "Technology Stack:\n\n"
         
-        tech_content = "Tech Stack:\n"
         if isinstance(actual_stack, dict):
             for category, technologies in actual_stack.items():
                 tech_content += f"{category}:\n"
                 if isinstance(technologies, list):
                     for tech in technologies:
-                        tech_content += f"  - {tech}\n"
+                        tech_content += f"  • {tech}\n"
                 else:
-                    tech_content += f"  - {technologies}\n"
-        else:
-            tech_content += f"{json.dumps(actual_stack, indent=2)}"
+                    tech_content += f"  • {technologies}\n"
+                tech_content += "\n"
         
         documents.append(Document(
             page_content=tech_content,
-            metadata={"source": "Tech Stack"}
+            metadata={"source": "Tech Stack", "type": "technology"}
         ))
     
-    # 4. UI/UX Guidelines
+    # 8. UI/UX Guidelines (Single Chunk)
     uiux = project_data.get("uiux_guidelines", {})
-    if uiux and uiux.get("guidelines"):
-        uiux_content = f"UI/UX Guidelines:\n{uiux.get('guidelines', 'N/A')}"
+    if uiux:
+        uiux_content = "UI/UX Guidelines:\n\n"
+        guidelines = uiux.get('guidelines', 'No guidelines defined yet')
+        uiux_content += guidelines
+        
         documents.append(Document(
             page_content=uiux_content,
-            metadata={"source": "UI/UX Guidelines"}
+            metadata={"source": "UI/UX Guidelines", "type": "design"}
         ))
     
-    # 5. Project Details
-    project = project_data.get("project", {})
-    if project:
-        project_content = (
-            f"Project Details:\n"
-            f"Name: {project.get('name', 'N/A')}\n"
-            f"Description: {project.get('description', 'N/A')}\n"
-            f"Application Type: {project.get('application_type', 'N/A')}\n"
-            f"Status: {project.get('status', 'N/A')}\n"
-        )
-        documents.append(Document(
-            page_content=project_content,
-            metadata={"source": "Project Details"}
-        ))
-    
-    # 6. Actions and Interactions
-    actions = project_data.get("actions_interactions", [])
-    if actions:
-        actions_content = "Actions and Interactions:\n"
-        for action in actions:
-            if isinstance(action, dict):
-                actions_content += (
-                    f"- Component: {action.get('component_name', 'N/A')}\n"
-                    f"  Action Type: {action.get('action_type', 'N/A')}\n"
-                    f"  Description: {action.get('description', 'N/A')}\n"
-                    f"  Trigger: {action.get('trigger_event', 'N/A')}\n"
-                    f"  Response: {action.get('response_action', 'N/A')}\n\n"
-                )
-        if len(actions_content) > 30:  # Only add if there's content
-            documents.append(Document(
-                page_content=actions_content.strip(),
-                metadata={"source": "Actions and Interactions"}
-            ))
-    
-    # 7. Animation Effects
-    animations = project_data.get("animation_effects", [])
-    if animations:
-        animations_content = "Animation Effects:\n"
-        for animation in animations:
-            if isinstance(animation, dict):
-                animations_content += (
-                    f"- Element: {animation.get('element_name', 'N/A')}\n"
-                    f"  Animation Type: {animation.get('animation_type', 'N/A')}\n"
-                    f"  Duration: {animation.get('duration', 'N/A')}\n"
-                    f"  Trigger: {animation.get('trigger', 'N/A')}\n\n"
-                )
-        if len(animations_content) > 20:  # Only add if there's content
-            documents.append(Document(
-                page_content=animations_content.strip(),
-                metadata={"source": "Animation Effects"}
-            ))
-    
-    # 8. Recent AI Prompts (for context on what's been generated)
-    prompts = project_data.get("recent_ai_prompts", [])
-    if prompts:
-        prompts_content = "Recent AI Generated Content:\n"
-        for prompt in prompts[:5]:  # Only include recent 5
-            if isinstance(prompt, dict):
-                prompts_content += (
-                    f"- Type: {prompt.get('prompt_type', 'N/A')}\n"
-                    f"  Context: {prompt.get('context', 'N/A')[:200]}...\n\n"
-                )
-        if len(prompts_content) > 30:  # Only add if there's content
-            documents.append(Document(
-                page_content=prompts_content.strip(),
-                metadata={"source": "Recent AI Prompts"}
-            ))
-    
-    # 9. Complete Module List Summary (for overview questions)
-    modules = project_data.get("modules", [])
-    if modules:
-        modules_summary = "Complete List of All Modules in the Project:\n\n"
-        
-        # Group by priority
-        high_priority = [m for m in modules if str(m.get('priority', '')).lower() == 'high']
-        medium_priority = [m for m in modules if str(m.get('priority', '')).lower() == 'medium']
-        low_priority = [m for m in modules if str(m.get('priority', '')).lower() == 'low']
-        other_priority = [m for m in modules if m not in high_priority + medium_priority + low_priority]
-        
-        if high_priority:
-            modules_summary += "HIGH PRIORITY MODULES:\n"
-            for module in high_priority:
-                modules_summary += f"  • {module.get('module_name', 'Unnamed')} - {module.get('description', 'No description')[:80]}\n"
-        
-        if medium_priority:
-            modules_summary += "\nMEDIUM PRIORITY MODULES:\n"
-            for module in medium_priority:
-                modules_summary += f"  • {module.get('module_name', 'Unnamed')} - {module.get('description', 'No description')[:80]}\n"
-        
-        if low_priority:
-            modules_summary += "\nLOW PRIORITY MODULES:\n"
-            for module in low_priority:
-                modules_summary += f"  • {module.get('module_name', 'Unnamed')} - {module.get('description', 'No description')[:80]}\n"
-        
-        if other_priority:
-            modules_summary += "\nOTHER MODULES:\n"
-            for module in other_priority:
-                modules_summary += f"  • {module.get('module_name', 'Unnamed')} - {module.get('description', 'No description')[:80]}\n"
-        
-        modules_summary += f"\nTotal Modules in Project: {len(modules)}\n"
-        modules_summary += f"Module Names: {', '.join([m.get('module_name', 'Unnamed') for m in modules])}\n"
-        
-        documents.append(Document(
-            page_content=modules_summary,
-            metadata={"source": "Modules Summary", "type": "overview", "total_count": len(modules)}
-        ))
-    
-    # 10. Complete User Stories Summary
-    user_stories = project_data.get("user_stories", [])
-    if user_stories:
-        stories_summary = "Complete List of All User Stories in the Project:\n\n"
-        for story in user_stories[:30]:  # Limit to prevent too large chunk
-            stories_summary += f"- {story.get('title', 'Unnamed')} (Priority: {story.get('priority', 'N/A')}, Status: {story.get('status', 'N/A')})\n"
-        if len(user_stories) > 30:
-            stories_summary += f"\n... and {len(user_stories) - 30} more user stories\n"
-        stories_summary += f"\nTotal User Stories: {len(user_stories)}\n"
-        
-        documents.append(Document(
-            page_content=stories_summary,
-            metadata={"source": "User Stories Summary", "type": "overview"}
-        ))
-    
-    # 11. Complete Features Summary
-    features = project_data.get("features", [])
-    if features:
-        features_summary = "Complete List of All Features in the Project:\n\n"
-        for feature in features[:30]:  # Limit to prevent too large chunk
-            features_summary += f"- {feature.get('title', 'Unnamed')} (Priority: {feature.get('priority', 'N/A')}, Status: {feature.get('status', 'N/A')})\n"
-        if len(features) > 30:
-            features_summary += f"\n... and {len(features) - 30} more features\n"
-        features_summary += f"\nTotal Features: {len(features)}\n"
-        
-        documents.append(Document(
-            page_content=features_summary,
-            metadata={"source": "Features Summary", "type": "overview"}
-        ))
-    
-    # 12. Detailed Modules with User Stories and Features
-    for module in modules:
-        module_name = module.get('module_name', 'Unnamed Module')
-        module_content = f"Module: {module_name}\n"
-        module_content += f"Description: {module.get('description', 'N/A')}\n"
-        module_content += f"Priority: {module.get('priority', 'N/A')}\n"
-        module_content += f"Business Impact: {module.get('business_impact', 'N/A')}\n\n"
-        
-        # Get user stories for this module
-        module_id = module.get('id')
-        user_stories = [us for us in project_data.get("user_stories", []) 
-                       if us.get('module_id') == module_id]
-        
-        for story in user_stories:
-            module_content += (
-                f"  User Story: {story.get('title', 'N/A')} (ID: {story.get('id', 'N/A')})\n"
-                f"  Role: {story.get('user_role', 'N/A')}\n"
-                f"  Description: {story.get('description', 'N/A')}\n"
-                f"  Acceptance Criteria: {story.get('acceptance_criteria', 'N/A')}\n"
-                f"  Priority: {story.get('priority', 'N/A')}\n"
-                f"  Status: {story.get('status', 'N/A')}\n"
-            )
-            
-            # Get features for this user story
-            story_id = story.get('id')
-            features = [f for f in project_data.get("features", []) 
-                        if f.get('user_story_id') == story_id]
-            
-            for feature in features:
-                module_content += (
-                    f"    - Feature: {feature.get('title', 'N/A')} (ID: {feature.get('id', 'N/A')})\n"
-                    f"      Description: {feature.get('description', 'N/A')}\n"
-                    f"      Priority: {feature.get('priority', 'N/A')}\n"
-                    f"      Status: {feature.get('status', 'N/A')}\n"
-                    f"      Business Rules: {feature.get('business_rules', 'N/A')}\n"
-                )
-            module_content += "\n"
-        
-        documents.append(Document(
-            page_content=module_content.strip(),
-            metadata={"source": "Module", "module_name": module_name, "module_id": module_id}
-        ))
     
     return documents
 
@@ -296,9 +389,11 @@ def initialize_rag(project_id: str, project_data: Dict) -> None:
     if not os.getenv("OPENROUTER_API_KEY"):
         raise ValueError("OPENROUTER_API_KEY not found in environment")
     
-    # Check if we need to reinitialize (different project)
-    if _current_project_id == project_id and _vector_store is not None:
-        return  # Already initialized for this project
+    # Check if we need to reinitialize (different project or embeddings changed)
+    if _current_project_id == project_id and _vector_store is not None and _embeddings is not None:
+        # Check if we're using a different embedding model
+        if not hasattr(_embeddings, '_model_changed'):
+            return  # Already initialized for this project
     
     _current_project_id = project_id
     
@@ -308,15 +403,51 @@ def initialize_rag(project_id: str, project_data: Dict) -> None:
     if not documents:
         raise ValueError("No documents created from project data")
     
+    # Debug: Print created chunks
+    if DEBUG_MODE:
+        print("\n" + "="*80)
+        print("📦 INITIALIZING RAG - CHUNKS CREATED:")
+        print("="*80)
+        print(f"Total chunks created: {len(documents)}")
+        print("-"*40)
+        
+        for i, doc in enumerate(documents, 1):
+            print(f"\nChunk {i}:")
+            print(f"  Source: {doc.metadata.get('source', 'Unknown')}")
+            if 'module_name' in doc.metadata:
+                print(f"  Module: {doc.metadata['module_name']}")
+            if 'type' in doc.metadata:
+                print(f"  Type: {doc.metadata['type']}")
+            print(f"  Size: {len(doc.page_content)} characters")
+            # Show first 200 chars for initialization (full content would be too much for all chunks)
+            preview = doc.page_content[:200] + ("..." if len(doc.page_content) > 200 else "")
+            print(f"  Preview: {preview}")
+        
+        print("\n" + "="*80)
+        print(f"✅ RAG initialized with {len(documents)} chunks")
+        print("="*80 + "\n")
+    else:
+        print(f"✅ RAG initialized with {len(documents)} chunks")
+    
     # 2. Initialize embeddings
     if _embeddings is None:
-        model_kwargs = {'device': 'cpu'}
+        # Nomic embeddings require trust_remote_code
+        model_kwargs = {
+            'device': 'cpu',
+            'trust_remote_code': True  # Required for nomic-embed
+        }
         encode_kwargs = {'normalize_embeddings': True}
+        
+        print(f"Loading embedding model: {EMBEDDING_MODEL}")
+        print("Note: First time loading may take a few minutes to download the model...")
+        
         _embeddings = HuggingFaceEmbeddings(
             model_name=EMBEDDING_MODEL,
             model_kwargs=model_kwargs,
             encode_kwargs=encode_kwargs
         )
+        
+        print("✅ Embedding model loaded successfully")
     
     # 3. Create or load vector store (project-specific)
     # Ensure DB_DIR exists
@@ -324,21 +455,38 @@ def initialize_rag(project_id: str, project_data: Dict) -> None:
     db_path = os.path.join(DB_DIR, project_id)
     os.makedirs(db_path, exist_ok=True)
     
-    if os.path.exists(os.path.join(db_path, "index.faiss")):
-        _vector_store = FAISS.load_local(
-            folder_path=db_path,
-            embeddings=_embeddings,
-            allow_dangerous_deserialization=True
-        )
+    # Force rebuild if embedding model changed or if specified
+    force_rebuild = os.getenv("RAG_FORCE_REBUILD", "false").lower() == "true"
+    
+    if os.path.exists(os.path.join(db_path, "index.faiss")) and not force_rebuild:
+        try:
+            print("Loading existing vector store...")
+            _vector_store = FAISS.load_local(
+                folder_path=db_path,
+                embeddings=_embeddings,
+                allow_dangerous_deserialization=True
+            )
+            print("✅ Vector store loaded from cache")
+        except Exception as e:
+            print(f"⚠️ Failed to load vector store: {e}")
+            print("Rebuilding vector store with new embeddings...")
+            _vector_store = FAISS.from_documents(
+                documents=documents,
+                embedding=_embeddings
+            )
+            _vector_store.save_local(folder_path=db_path)
+            print("✅ Vector store rebuilt and saved")
     else:
+        print("Building new vector store...")
         _vector_store = FAISS.from_documents(
             documents=documents,
             embedding=_embeddings
         )
         _vector_store.save_local(folder_path=db_path)
+        print("✅ Vector store created and saved")
     
-    # 4. Create retriever with higher k value for better coverage
-    retriever = _vector_store.as_retriever(search_kwargs={"k": 10})
+    # 4. Create retriever with optimized k value (3 most relevant chunks)
+    retriever = _vector_store.as_retriever(search_kwargs={"k": 3})
     
     # 5. Initialize LLM
     llm = ChatOpenAI(
@@ -357,11 +505,14 @@ def initialize_rag(project_id: str, project_data: Dict) -> None:
 Answer the user's question based on the following project context.
 
 IMPORTANT INSTRUCTIONS:
-- If asked to list ALL items (modules, features, user stories, etc.), provide the COMPLETE list from the context
-- If you see a summary section with totals, use that to ensure completeness
-- If the context shows "Total Modules: X" or similar counts, make sure your answer includes all items
-- Be comprehensive when asked for "all" or "complete list"
-- Provide specific details when available
+- If asked to list ALL modules or module names, look for the "MODULE LIST OVERVIEW" or "ALL MODULES IN THIS PROJECT" section
+- When you see "Total Modules: X", ensure your answer includes exactly X modules
+- For listing questions, use the dedicated list chunks that contain complete lists
+- If asked for details about a specific module, use the individual module chunks
+- Always provide the COMPLETE list when asked for "all" items
+- If the context contains a "Quick List of Module Names" section, use it for module name questions
+- Distinguish between "Global Business Rules" (project-level) and feature-specific business rules
+- When discussing business rules, mention which modules they apply to if specified
 
 <context>
 {context}
@@ -387,14 +538,119 @@ def query_rag(question: str) -> str:
     """
     Query the RAG system with a question.
     """
-    global _rag_chain
+    global _rag_chain, _vector_store
     
     if _rag_chain is None:
         raise ValueError("RAG system not initialized. Call initialize_rag() first.")
     
     try:
+        if DEBUG_MODE:
+            # Debug: Retrieve and print chunks
+            print("\n" + "="*80)
+            print(f"🔍 QUERY: {question}")
+            print("="*80)
+            
+            # Get the retriever and fetch documents
+            retriever = _vector_store.as_retriever(search_kwargs={"k": 3})
+            
+            # Try different method names for compatibility
+            try:
+                retrieved_docs = retriever.invoke(question)
+            except AttributeError:
+                try:
+                    retrieved_docs = retriever.get_relevant_documents(question)
+                except AttributeError:
+                    # Fallback: use similarity search directly
+                    retrieved_docs = _vector_store.similarity_search(question, k=3)
+            
+            # Print retrieved chunks for debugging
+            print(f"\n📚 RETRIEVED {len(retrieved_docs)} CHUNKS:")
+            print("-"*80)
+            
+            for i, doc in enumerate(retrieved_docs, 1):
+                print(f"\n🔖 CHUNK {i}:")
+                print(f"   Source: {doc.metadata.get('source', 'Unknown')}")
+                if 'module_name' in doc.metadata:
+                    print(f"   Module: {doc.metadata['module_name']}")
+                if 'type' in doc.metadata:
+                    print(f"   Type: {doc.metadata['type']}")
+                print(f"   Length: {len(doc.page_content)} characters")
+                print(f"\n   === COMPLETE CHUNK CONTENT ===")
+                print("   " + doc.page_content.replace('\n', '\n   '))
+                print(f"   === END OF CHUNK ===")
+                print("-"*40)
+            
+            # Calculate total tokens (rough estimate: 1 token ≈ 4 characters)
+            total_chars = sum(len(doc.page_content) for doc in retrieved_docs)
+            estimated_tokens = total_chars // 4
+            print(f"\n📊 TOTAL CHARACTERS: {total_chars}")
+            print(f"📊 ESTIMATED TOKENS: ~{estimated_tokens}")
+            print("="*80 + "\n")
+        
+        # Format the context that will be sent to LLM
+        if DEBUG_MODE:
+            # Get the formatted context
+            retriever = _vector_store.as_retriever(search_kwargs={"k": 3})
+            try:
+                docs = retriever.invoke(question)
+            except AttributeError:
+                try:
+                    docs = retriever.get_relevant_documents(question)
+                except AttributeError:
+                    docs = _vector_store.similarity_search(question, k=3)
+            
+            # Format documents the same way the chain does
+            formatted_context = "\n\n---\n\n".join([d.page_content for d in docs])
+            
+            # Build the complete prompt that goes to LLM
+            complete_prompt = f"""You are an expert project assistant for a software development team. 
+Answer the user's question based on the following project context.
+
+IMPORTANT INSTRUCTIONS:
+- If asked to list ALL modules or module names, look for the "MODULE LIST OVERVIEW" or "ALL MODULES IN THIS PROJECT" section
+- When you see "Total Modules: X", ensure your answer includes exactly X modules
+- For listing questions, use the dedicated list chunks that contain complete lists
+- If asked for details about a specific module, use the individual module chunks
+- Always provide the COMPLETE list when asked for "all" items
+- If the context contains a "Quick List of Module Names" section, use it for module name questions
+- Distinguish between "Global Business Rules" (project-level) and feature-specific business rules
+- When discussing business rules, mention which modules they apply to if specified
+
+<context>
+{formatted_context}
+</context>
+
+Question: {question}
+
+Answer:"""
+            
+            print("\n" + "="*80)
+            print("🤖 COMPLETE INPUT TO LLM:")
+            print("="*80)
+            print(f"Model: {OPENROUTER_MODEL} (via OpenRouter)")
+            print(f"Temperature: 0.7")
+            print("-"*40)
+            print("\n--- SYSTEM PROMPT + FORMATTED CONTEXT + QUESTION ---\n")
+            print(complete_prompt)
+            print("\n--- END OF LLM INPUT ---")
+            print(f"\nTotal LLM input length: {len(complete_prompt)} characters")
+            print(f"Estimated tokens for LLM input: ~{len(complete_prompt) // 4}")
+            print("="*80 + "\n")
+        
+        # Now invoke the chain with the question
         answer = _rag_chain.invoke(question)
+        
+        if DEBUG_MODE:
+            # Print complete answer
+            print(f"✅ COMPLETE ANSWER:")
+            print("-"*40)
+            print(answer)
+            print("-"*40)
+            print(f"Answer length: {len(answer)} characters")
+            print("="*80 + "\n")
+        
         return answer
     except Exception as e:
+        print(f"❌ ERROR: {str(e)}")
         raise Exception(f"Error querying RAG: {str(e)}")
 
