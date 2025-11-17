@@ -3,6 +3,7 @@ import { body, param } from 'express-validator';
 import { authenticateUser, AuthRequest } from '../middleware/auth';
 import { AppError } from '../middleware/errorHandler';
 import { generateContextualPrompt, isOpenAIConfigured } from '../services/openai.service';
+import { initializeRAG, queryRAG, checkRAGHealth } from '../services/rag.service';
 
 const router = Router();
 router.use(authenticateUser);
@@ -431,6 +432,118 @@ router.delete('/:id', async (req: AuthRequest, res, next) => {
       message: 'Prompt deleted successfully'
     });
   } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/prompts/rag/initialize
+ * Initialize RAG system with project data
+ */
+router.post(
+  '/rag/initialize',
+  [
+    body('projectId').isUUID(),
+  ],
+  async (req: AuthRequest, res, next) => {
+    try {
+      const { projectId } = req.body;
+
+      // Verify user is a Vibe Engineer
+      if (req.user?.role !== 'vibe_engineer') {
+        throw new AppError('This endpoint is only accessible to Vibe Engineers', 403);
+      }
+
+      console.log(`🔍 Initializing RAG for project: ${projectId}`);
+
+      // Fetch comprehensive project data
+      const [projectRes, modulesRes, userStoriesRes, featuresRes, projectInfoRes, businessRulesRes, techStackRes, uiuxRes] = await Promise.all([
+        req.supabase!.from('projects').select('*').eq('id', projectId).single(),
+        req.supabase!.from('modules').select('*').eq('project_id', projectId),
+        req.supabase!.from('user_stories').select('*').eq('project_id', projectId),
+        req.supabase!.from('features').select('*').eq('project_id', projectId),
+        req.supabase!.from('project_information').select('*').eq('project_id', projectId).single(),
+        req.supabase!.from('business_rules').select('*').eq('project_id', projectId).single(),
+        req.supabase!.from('tech_stack').select('*').eq('project_id', projectId).single(),
+        req.supabase!.from('uiux_guidelines').select('*').eq('project_id', projectId).single(),
+      ]);
+
+      if (!projectRes.data) {
+        throw new AppError('Project not found', 404);
+      }
+
+      // Prepare project data for RAG
+      const projectData = {
+        project_information: projectInfoRes.data || {},
+        modules: modulesRes.data || [],
+        user_stories: userStoriesRes.data || [],
+        features: featuresRes.data || [],
+        business_rules: businessRulesRes.data || {},
+        tech_stack: techStackRes.data || {},
+        uiux_guidelines: uiuxRes.data || {},
+      };
+
+      // Initialize RAG
+      await initializeRAG(projectId, projectData);
+
+      res.json({
+        success: true,
+        message: 'RAG system initialized successfully'
+      });
+    } catch (error: any) {
+      console.error('Error initializing RAG:', error);
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /api/prompts/rag/query
+ * Query RAG system with a question
+ */
+router.post(
+  '/rag/query',
+  [
+    body('projectId').isUUID(),
+    body('question').notEmpty().withMessage('Question is required'),
+  ],
+  async (req: AuthRequest, res, next) => {
+    try {
+      const { projectId, question } = req.body;
+
+      // Verify user is a Vibe Engineer
+      if (req.user?.role !== 'vibe_engineer') {
+        throw new AppError('This endpoint is only accessible to Vibe Engineers', 403);
+      }
+
+      console.log(`🔍 Querying RAG for project: ${projectId}, question: ${question}`);
+
+      // Query RAG
+      const answer = await queryRAG(projectId, question);
+
+      res.json({
+        success: true,
+        answer: answer
+      });
+    } catch (error: any) {
+      console.error('Error querying RAG:', error);
+      next(error);
+    }
+  }
+);
+
+/**
+ * GET /api/prompts/rag/health
+ * Check RAG service health
+ */
+router.get('/rag/health', async (req: AuthRequest, res, next) => {
+  try {
+    const isHealthy = await checkRAGHealth();
+    res.json({
+      success: true,
+      healthy: isHealthy
+    });
+  } catch (error: any) {
     next(error);
   }
 });
