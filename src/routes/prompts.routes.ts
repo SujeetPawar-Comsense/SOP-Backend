@@ -456,8 +456,20 @@ router.post(
 
       console.log(`🔍 Initializing RAG for project: ${projectId}`);
 
-      // Fetch comprehensive project data
-      const [projectRes, modulesRes, userStoriesRes, featuresRes, projectInfoRes, businessRulesRes, techStackRes, uiuxRes] = await Promise.all([
+      // Fetch comprehensive project data - ALL tables
+      const [
+        projectRes, 
+        modulesRes, 
+        userStoriesRes, 
+        featuresRes, 
+        projectInfoRes, 
+        businessRulesRes, 
+        techStackRes, 
+        uiuxRes,
+        actionsRes,
+        animationsRes,
+        promptsRes
+      ] = await Promise.all([
         req.supabase!.from('projects').select('*').eq('id', projectId).single(),
         req.supabase!.from('modules').select('*').eq('project_id', projectId),
         req.supabase!.from('user_stories').select('*').eq('project_id', projectId),
@@ -466,14 +478,18 @@ router.post(
         req.supabase!.from('business_rules').select('*').eq('project_id', projectId).single(),
         req.supabase!.from('tech_stack').select('*').eq('project_id', projectId).single(),
         req.supabase!.from('uiux_guidelines').select('*').eq('project_id', projectId).single(),
+        req.supabase!.from('actions_interactions').select('*').eq('project_id', projectId),
+        req.supabase!.from('animation_effects').select('*').eq('project_id', projectId),
+        req.supabase!.from('ai_prompts').select('*').eq('project_id', projectId).order('created_at', { ascending: false }).limit(10)
       ]);
 
       if (!projectRes.data) {
         throw new AppError('Project not found', 404);
       }
 
-      // Prepare project data for RAG
+      // Prepare complete project data for RAG
       const projectData = {
+        project: projectRes.data || {},
         project_information: projectInfoRes.data || {},
         modules: modulesRes.data || [],
         user_stories: userStoriesRes.data || [],
@@ -481,6 +497,9 @@ router.post(
         business_rules: businessRulesRes.data || {},
         tech_stack: techStackRes.data || {},
         uiux_guidelines: uiuxRes.data || {},
+        actions_interactions: actionsRes.data || [],
+        animation_effects: animationsRes.data || [],
+        recent_ai_prompts: promptsRes.data || []
       };
 
       // Initialize RAG
