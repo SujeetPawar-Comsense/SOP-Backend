@@ -124,6 +124,7 @@ router.post(
                     description: feature.taskDescription,
                     priority: feature.priority || 'Medium',
                     estimated_hours: feature.estimated_hours ? parseInt(feature.estimated_hours) : null,
+                    business_rules: feature.business_rules || null,
                     assignee: null,
                     status: 'Not Started'
                   };
@@ -1032,6 +1033,7 @@ async function saveParsedDataToDatabase(supabase: SupabaseClient, projectId: str
                   description: feature.taskDescription,
                   priority: feature.priority || 'Medium',
                   estimated_hours: feature.estimated_hours ? parseInt(feature.estimated_hours) : null,
+                  business_rules: feature.business_rules || null,
                   status: 'Not Started'
                 };
                 
