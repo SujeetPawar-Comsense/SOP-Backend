@@ -189,13 +189,15 @@ router.post(
     body('projectId').isUUID(),
     body('developmentType')
       .notEmpty()
-      .isIn(['Frontend', 'Backend API', 'Database Schema', 'Unit Tests', 'Integration Tests', 'Batch Application', 'Microservices', 'CI/CD Pipeline', 'Documentation'])
+      .isIn(['Frontend', 'Backend API', 'Database Schema', 'Unit Tests', 'Integration Tests', 'Batch Application', 'Microservices', 'CI/CD Pipeline', 'Documentation', 'UI Components', 'API Endpoints', 'Database Schema', 'Business Logic', 'Authentication', 'Validation', 'Testing'])
       .withMessage('Invalid development type'),
-    body('previousOutputs').optional().isArray().withMessage('Previous outputs must be an array')
+    body('previousOutputs').optional().isArray().withMessage('Previous outputs must be an array'),
+    body('selectedModuleId').optional().isUUID(),
+    body('selectedFeatureId').optional().isUUID()
   ],
   async (req: AuthRequest, res, next) => {
     try {
-      const { projectId, developmentType, previousOutputs = [] } = req.body;
+      const { projectId, developmentType, previousOutputs = [], selectedModuleId, selectedFeatureId } = req.body;
 
       // Check if OpenAI is configured
       if (!isOpenAIConfigured()) {
@@ -210,7 +212,7 @@ router.post(
       console.log(`🎯 Vibe Engineer generating ${developmentType} prompt...`);
 
       // Fetch comprehensive project data
-      const [projectRes, modulesRes, userStoriesRes, featuresRes, projectInfoRes, businessRulesRes, techStackRes, uiuxRes] = await Promise.all([
+      const [projectRes, modulesRes, userStoriesRes, featuresRes, projectInfoRes, businessRulesRes, techStackRes, uiuxRes, previousPromptsRes] = await Promise.all([
         req.supabase!.from('projects').select('*').eq('id', projectId).single(),
         req.supabase!.from('modules').select('*').eq('project_id', projectId),
         req.supabase!.from('user_stories').select('*').eq('project_id', projectId),
@@ -218,21 +220,41 @@ router.post(
         req.supabase!.from('project_information').select('*').eq('project_id', projectId).single(),
         req.supabase!.from('business_rules').select('*').eq('project_id', projectId).single(),
         req.supabase!.from('tech_stack').select('*').eq('project_id', projectId).single(),
-        req.supabase!.from('uiux_guidelines').select('*').eq('project_id', projectId).single()
+        req.supabase!.from('uiux_guidelines').select('*').eq('project_id', projectId).single(),
+        // Fetch previous prompts and their saved implementations
+        req.supabase!.from('ai_prompts')
+          .select('generated_prompt, context')
+          .eq('project_id', projectId)
+          .order('created_at', { ascending: true })
       ]);
 
       if (!projectRes.data) {
         throw new AppError('Project not found', 404);
       }
 
-      // Build complete project data structure
+      // Filter modules and features based on selection
+      let filteredModules = modulesRes.data || [];
+      let filteredFeatures = featuresRes.data || [];
+      let filteredUserStories = userStoriesRes.data || [];
+
+      if (selectedModuleId) {
+        filteredModules = filteredModules.filter((m: any) => m.id === selectedModuleId);
+        filteredFeatures = filteredFeatures.filter((f: any) => f.module_id === selectedModuleId);
+        filteredUserStories = filteredUserStories.filter((us: any) => us.module_id === selectedModuleId);
+      }
+
+      if (selectedFeatureId) {
+        filteredFeatures = filteredFeatures.filter((f: any) => f.id === selectedFeatureId);
+      }
+
+      // Build complete project data structure with filtered data
       const projectData = {
         name: projectRes.data.name,
         description: projectRes.data.description,
         application_type: projectRes.data.application_type,
-        modules: modulesRes.data || [],
-        userStories: userStoriesRes.data || [],
-        features: featuresRes.data || [],
+        modules: filteredModules,
+        userStories: filteredUserStories,
+        features: filteredFeatures,
         vision: projectInfoRes.data?.vision,
         purpose: projectInfoRes.data?.purpose,
         objectives: projectInfoRes.data?.objectives,
@@ -243,15 +265,47 @@ router.post(
         reportingRequirements: projectInfoRes.data?.reporting_requirements,
         businessRules: businessRulesRes.data?.config?.categories || [],
         techStack: techStackRes.data?.tech_stack,
-        uiuxGuidelines: uiuxRes.data?.guidelines
+        uiuxGuidelines: uiuxRes.data?.guidelines,
+        selectedModuleId,
+        selectedFeatureId
       };
+
+      // Collect previous outputs from saved prompts and implementations
+      const allPreviousOutputs = [...previousOutputs];
+      
+      // Add saved implementation code from previous prompts if available
+      if (previousPromptsRes.data && previousPromptsRes.data.length > 0) {
+        previousPromptsRes.data.forEach((prompt: any) => {
+          // Include the generated prompt itself
+          if (prompt.generated_prompt) {
+            allPreviousOutputs.push(prompt.generated_prompt);
+          }
+          // Include saved implementation code if available in context
+          if (prompt.context?.implementationCode) {
+            allPreviousOutputs.push(prompt.context.implementationCode);
+          }
+        });
+      }
+
+      // Map layer types to proper DevelopmentType
+      const developmentTypeMap: Record<string, string> = {
+        'UI Components': 'Frontend',
+        'API Endpoints': 'Backend API',
+        'Database Schema': 'Database Schema',
+        'Business Logic': 'Backend API',
+        'Authentication': 'Backend API',
+        'Validation': 'Backend API',
+        'Testing': 'Unit Tests'
+      };
+
+      const mappedDevelopmentType = developmentTypeMap[developmentType] || developmentType;
 
       // Generate the prompt using STRUCT_TO_PROMPT
       const generatedPrompt = await generateContextualPrompt(
         projectId,
         projectData,
-        developmentType,
-        previousOutputs
+        mappedDevelopmentType,
+        allPreviousOutputs
       );
 
       // Save the generated prompt with metadata
@@ -259,13 +313,16 @@ router.post(
         .from('ai_prompts')
         .insert({
           project_id: projectId,
-          prompt_type: `vibe_${developmentType.toLowerCase().replace(/ /g, '_')}`,
+          prompt_type: `vibe_${mappedDevelopmentType.toLowerCase().replace(/ /g, '_')}`,
           generated_prompt: generatedPrompt,
           context: {
             role: 'vibe_engineer',
-            developmentType,
+            developmentType: mappedDevelopmentType,
+            originalDevelopmentType: developmentType,
             applicationType: projectRes.data.application_type,
-            previousOutputsCount: previousOutputs.length,
+            previousOutputsCount: allPreviousOutputs.length,
+            selectedModuleId,
+            selectedFeatureId,
             generatedAt: new Date().toISOString()
           }
         })
@@ -281,7 +338,70 @@ router.post(
       res.json({
         success: true,
         prompt: savedPrompt,
-        message: `${developmentType} prompt generated successfully using STRUCT_TO_PROMPT`
+        generatedPrompt: generatedPrompt,
+        message: `${mappedDevelopmentType} prompt generated successfully using STRUCT_TO_PROMPT`
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * PUT /api/prompts/:id/implementation
+ * Save implementation code for a prompt
+ */
+router.put(
+  '/:id/implementation',
+  [
+    param('id').isUUID(),
+    body('implementationCode').notEmpty().withMessage('Implementation code is required'),
+    body('developerNotes').optional()
+  ],
+  async (req: AuthRequest, res, next) => {
+    try {
+      const { id } = req.params;
+      const { implementationCode, developerNotes } = req.body;
+
+      // Verify user is a Vibe Engineer
+      if (req.user?.role !== 'vibe_engineer') {
+        throw new AppError('This endpoint is only accessible to Vibe Engineers', 403);
+      }
+
+      // Get existing prompt
+      const { data: existingPrompt, error: fetchError } = await req.supabase!
+        .from('ai_prompts')
+        .select('*')
+        .eq('id', id)
+        .single();
+
+      if (fetchError || !existingPrompt) {
+        throw new AppError('Prompt not found', 404);
+      }
+
+      // Update prompt with implementation code
+      const { data: updatedPrompt, error: updateError } = await req.supabase!
+        .from('ai_prompts')
+        .update({
+          context: {
+            ...existingPrompt.context,
+            implementationCode,
+            developerNotes: developerNotes || existingPrompt.context?.developerNotes,
+            implementationSavedAt: new Date().toISOString()
+          }
+        })
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (updateError) {
+        throw new AppError(updateError.message, 400);
+      }
+
+      res.json({
+        success: true,
+        prompt: updatedPrompt,
+        message: 'Implementation code saved successfully'
       });
     } catch (error) {
       next(error);

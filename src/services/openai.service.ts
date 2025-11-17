@@ -300,7 +300,7 @@ export async function generateContextualPrompt(
         },
         {
           role: 'user',
-          content: `ProjectJSON: ${JSON.stringify(parsedBRD, null, 2)}\n\nApplicationType: ${developmentType}\n\nPreviousOutputs: ${JSON.stringify(previousOutputs)}`
+          content: `ProjectJSON: ${JSON.stringify(parsedBRD, null, 2)}\n\nDevelopmentType: ${developmentType}\n\nPreviousOutputs: ${JSON.stringify(previousOutputs)}`
         }
       ],
       temperature: 0.7
