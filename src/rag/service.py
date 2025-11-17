@@ -7,7 +7,6 @@ import json
 import sys
 from typing import Dict, List, Optional
 from dotenv import load_dotenv
-from .business_rules_mapper import get_modules_for_rule
 
 # LangChain components
 from langchain_community.vectorstores import FAISS
@@ -24,7 +23,7 @@ from langchain_core.documents import Document
 _backend_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DB_DIR = os.path.join(_backend_root, "rag_db")
 EMBEDDING_MODEL = "nomic-ai/nomic-embed-text-v1.5"
-OPENROUTER_MODEL = "openai/gpt-4o-mini"
+OPENROUTER_MODEL = "google/gemini-2.5-flash"
 
 # Debug mode - set to True to see retrieved chunks
 DEBUG_MODE = os.getenv("RAG_DEBUG", "true").lower() == "true"
@@ -192,145 +191,39 @@ def create_document_chunks(project_data: Dict) -> List[Document]:
             print("DEBUG - Business Rules Structure:")
             print(json.dumps(business_rules, indent=2)[:500])
         
-        config = business_rules.get("config", business_rules)
+        # Check for the actual structure with categories at the root level or in config
+        categories = []
         
-        # Handle different possible structures
-        if config:
-            # Check if categories exist
+        # First check if categories is directly in business_rules
+        if "categories" in business_rules:
+            categories = business_rules.get("categories", [])
+        # Then check if it's in config
+        elif "config" in business_rules:
+            config = business_rules.get("config", {})
             categories = config.get("categories", [])
-            if categories:
-                for category in categories:
-                    if isinstance(category, dict):
-                        category_name = category.get('name', 'Category')
-                        category_desc = category.get('description', '')
-                        applicable_modules = category.get('applicableTo', category.get('applicableModules', []))
-                        
-                        rules_content += f"\n{category_name}:\n"
-                        if category_desc:
-                            rules_content += f"{category_desc}\n"
-                        
-                        # Check for subcategories
-                        subcategories = category.get('subcategories', [])
-                        if subcategories:
-                            for subcat in subcategories:
-                                if isinstance(subcat, dict):
-                                    rule_name = subcat.get('name', 'Rule')
-                                    rule_desc = subcat.get('description', '')
-                                    rule_example = subcat.get('example', '')
-                                    # Check both possible field names
-                                    rule_modules = subcat.get('applicableTo', subcat.get('applicableModules', []))
-                                    
-                                    rules_content += f"  • {rule_name}"
-                                    if rule_desc:
-                                        rules_content += f": {rule_desc}"
-                                    rules_content += "\n"
-                                    
-                                    if rule_example:
-                                        rules_content += f"    Example: {rule_example}\n"
-                                    
-                                    if rule_modules and len(rule_modules) > 0:
-                                        rules_content += f"    📍 Applicable to Modules: {', '.join(rule_modules)}\n"
-                                    elif applicable_modules and len(applicable_modules) > 0:
-                                        # Use category-level modules if subcategory doesn't have them
-                                        rules_content += f"    📍 Applicable to Modules: {', '.join(applicable_modules)}\n"
-                                    else:
-                                        rules_content += f"    📍 Applicable to: All modules\n"
-                                    rules_content += "\n"
-                        else:
-                            # No subcategories, show the category itself as a rule
-                            if applicable_modules and len(applicable_modules) > 0:
-                                rules_content += f"  📍 Applicable to Modules: {', '.join(applicable_modules)}\n"
-                            rules_content += "\n"
-            
-            # Also check for direct rules array (alternative structure)
-            rules = config.get("rules", [])
-            if rules:
-                for rule in rules:
-                    if isinstance(rule, dict):
-                        rule_name = rule.get('name', rule.get('title', 'Rule'))
-                        rule_desc = rule.get('description', '')
-                        rule_modules = rule.get('applicableTo', rule.get('applicableModules', []))
-                        
-                        rules_content += f"• {rule_name}"
-                        if rule_desc:
-                            rules_content += f": {rule_desc}"
-                        rules_content += "\n"
-                        
-                        if rule_modules and len(rule_modules) > 0:
-                            rules_content += f"  📍 Applicable to Modules: {', '.join(rule_modules)}\n"
-                        else:
-                            rules_content += f"  📍 Applicable to: All modules\n"
-                        rules_content += "\n"
         
-        # If no structured data found, parse plain text format
-        if len(rules_content) < 200:  # If we didn't get much from structured data
-            # Try to extract rules from various possible fields
-            rules_text = ""
-            if isinstance(business_rules, dict):
-                # Check different possible field names
-                for field in ['rules', 'content', 'text', 'description', 'value']:
-                    if field in business_rules:
-                        rules_text = str(business_rules[field])
-                        break
-                
-                # If still no text, check config
-                if not rules_text and config:
-                    for field in ['rules', 'content', 'text', 'description']:
-                        if field in config:
-                            rules_text = str(config[field])
-                            break
-            
-            # If we have rules text, parse it
-            if rules_text and len(rules_text) > 10:
-                rules_content = "GLOBAL BUSINESS RULES (Project-level Rules):\n\n"
-                rules_content += "Note: These are project-wide business rules that apply across modules, distinct from feature-specific business rules.\n\n"
-                
-                # Parse the plain text rules and add module mappings
-                rules_lines = rules_text.split('•')
-                if len(rules_lines) <= 1:
-                    # Try splitting by newlines if bullet points don't work
-                    rules_lines = [line for line in rules_text.split('\n') if line.strip() and ':' in line]
-                
-                for rule_line in rules_lines:
-                    if ':' in rule_line:
-                        parts = rule_line.split(':', 1)
-                        rule_name = parts[0].strip()
-                        rule_desc = parts[1].strip() if len(parts) > 1 else ""
-                        
-                        if rule_name:
-                            # Get applicable modules using our mapper
-                            applicable_modules = get_modules_for_rule(rule_name, rule_desc)
-                            
-                            rules_content += f"• {rule_name}: {rule_desc}\n"
-                            rules_content += f"  📍 Applicable to Modules: {', '.join(applicable_modules)}\n\n"
-                
-                # If parsing didn't work well, show the original text with a note
-                if rules_content.count('•') < 3:
-                    rules_content = "GLOBAL BUSINESS RULES (Project-level Rules):\n\n"
-                    rules_content += "Note: These are project-wide business rules. Module applicability has been inferred based on rule content.\n\n"
+        # Process categories if found
+        if categories:
+            for category in categories:
+                if isinstance(category, dict):
+                    rule_id = category.get('id', '')
+                    rule_name = category.get('name', 'Rule')
+                    rule_desc = category.get('description', '')
+                    applicable_modules = category.get('applicableTo', [])
                     
-                    # Show original text but add module mappings for known rules
-                    for rule_line in rules_text.split('\n'):
-                        if rule_line.strip():
-                            # Check if this line contains a known rule
-                            modules_found = []
-                            for known_rule in ["User Password Policy", "Unique User Identifiers", "Product Stock Availability",
-                                             "Order Stock Reservation", "Payment Gateway Compliance", "Order Status Workflow",
-                                             "Return Window Policy", "Refund Processing Time", "Seller Product Approval",
-                                             "Admin Action Logging", "Performance Threshold", "System Uptime",
-                                             "Scalability Requirements", "Data Security Compliance", "COD Restrictions",
-                                             "Reward Point Earning", "Reward Point Redemption"]:
-                                if known_rule.lower() in rule_line.lower():
-                                    modules_found = get_modules_for_rule(known_rule, rule_line)
-                                    break
-                            
-                            rules_content += rule_line + "\n"
-                            if modules_found:
-                                rules_content += f"  📍 Applicable to: {', '.join(modules_found)}\n"
-                            rules_content += "\n"
+                    rules_content += f"• {rule_name}:\n"
+                    if rule_desc:
+                        rules_content += f"  {rule_desc}\n"
+                    
+                    if applicable_modules and len(applicable_modules) > 0:
+                        rules_content += f"  📍 Applicable to: {', '.join(applicable_modules)}\n"
+                    else:
+                        rules_content += f"  📍 Applicable to: All modules\n"
+                    rules_content += "\n"
         
-        if len(rules_content) < 100:  # If we got almost nothing
-            rules_content += "Business rules data structure not recognized. Raw data may be available in other formats.\n"
+        # Add a summary at the end if we have rules
+        if categories and len(categories) > 0:
+            rules_content += f"\nTotal Global Business Rules: {len(categories)}\n"
         
         rules_content += "\nNote: Individual features may have their own specific business rules. Check feature details for feature-level rules.\n"
         
