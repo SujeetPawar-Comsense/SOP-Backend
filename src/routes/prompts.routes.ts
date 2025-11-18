@@ -193,12 +193,14 @@ router.post(
       .isIn(['Frontend', 'Backend API', 'Database Schema', 'Unit Tests', 'Integration Tests', 'Batch Application', 'Microservices', 'CI/CD Pipeline', 'Documentation', 'UI Components', 'API Endpoints', 'Database Schema', 'Business Logic', 'Authentication', 'Validation', 'Testing'])
       .withMessage('Invalid development type'),
     body('previousOutputs').optional().isArray().withMessage('Previous outputs must be an array'),
-    body('selectedModuleId').optional().isUUID(),
-    body('selectedFeatureId').optional().isUUID()
+    body('selectedModuleIds').optional().isArray().withMessage('Selected module IDs must be an array'),
+    body('selectedModuleIds.*').optional().isUUID().withMessage('Each module ID must be a valid UUID'),
+    body('selectedFeatureIds').optional().isArray().withMessage('Selected feature IDs must be an array'),
+    body('selectedFeatureIds.*').optional().isUUID().withMessage('Each feature ID must be a valid UUID')
   ],
   async (req: AuthRequest, res, next) => {
     try {
-      const { projectId, developmentType, previousOutputs = [], selectedModuleId, selectedFeatureId } = req.body;
+      const { projectId, developmentType, previousOutputs = [], selectedModuleIds = [], selectedFeatureIds = [] } = req.body;
 
       // Check if OpenAI is configured
       if (!isOpenAIConfigured()) {
@@ -238,14 +240,20 @@ router.post(
       let filteredFeatures = featuresRes.data || [];
       let filteredUserStories = userStoriesRes.data || [];
 
-      if (selectedModuleId) {
-        filteredModules = filteredModules.filter((m: any) => m.id === selectedModuleId);
-        filteredFeatures = filteredFeatures.filter((f: any) => f.module_id === selectedModuleId);
-        filteredUserStories = filteredUserStories.filter((us: any) => us.module_id === selectedModuleId);
+      // Filter by selected modules (if any)
+      if (selectedModuleIds && selectedModuleIds.length > 0) {
+        filteredModules = filteredModules.filter((m: any) => selectedModuleIds.includes(m.id));
+        filteredFeatures = filteredFeatures.filter((f: any) => 
+          f.module_id && selectedModuleIds.includes(f.module_id)
+        );
+        filteredUserStories = filteredUserStories.filter((us: any) => 
+          us.module_id && selectedModuleIds.includes(us.module_id)
+        );
       }
 
-      if (selectedFeatureId) {
-        filteredFeatures = filteredFeatures.filter((f: any) => f.id === selectedFeatureId);
+      // Further filter by selected features (if any)
+      if (selectedFeatureIds && selectedFeatureIds.length > 0) {
+        filteredFeatures = filteredFeatures.filter((f: any) => selectedFeatureIds.includes(f.id));
       }
 
       // Build complete project data structure with filtered data
@@ -322,8 +330,8 @@ router.post(
             originalDevelopmentType: developmentType,
             applicationType: projectRes.data.application_type,
             previousOutputsCount: allPreviousOutputs.length,
-            selectedModuleId,
-            selectedFeatureId,
+            selectedModuleIds: selectedModuleIds || [],
+            selectedFeatureIds: selectedFeatureIds || [],
             generatedAt: new Date().toISOString()
           }
         })
