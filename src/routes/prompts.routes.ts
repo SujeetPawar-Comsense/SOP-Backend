@@ -275,8 +275,8 @@ router.post(
         businessRules: businessRulesRes.data?.config?.categories || [],
         techStack: techStackRes.data?.tech_stack,
         uiuxGuidelines: uiuxRes.data?.guidelines,
-        selectedModuleId,
-        selectedFeatureId
+        selectedModuleIds,
+        selectedFeatureIds
       };
 
       // Collect previous outputs from saved prompts and implementations

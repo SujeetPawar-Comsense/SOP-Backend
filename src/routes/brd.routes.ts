@@ -856,6 +856,170 @@ router.post(
 );
 
 /**
+ * POST /api/brd/enhance-modules
+ * Enhance selected modules with AI
+ */
+router.post(
+  '/enhance-modules',
+  requireProjectOwner,
+  [
+    body('projectId').isUUID().withMessage('Valid project ID is required'),
+    body('modules').isArray().withMessage('Modules array is required'),
+    body('enhancementRequest').notEmpty().withMessage('Enhancement request is required')
+  ],
+  async (req: AuthRequest, res: any, next: any) => {
+    try {
+      if (!isOpenAIConfigured()) {
+        throw new AppError('OpenAI API is not configured', 500);
+      }
+
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({
+          success: false,
+          errors: errors.array()
+        });
+      }
+
+      const { projectId, modules, enhancementRequest } = req.body;
+
+      // Enhance modules using OpenAI
+      const enhancedModules = await enhanceProjectSection({
+        existingProjectJson: { modules },
+        enhancementRequest,
+        targetType: 'modules'
+      });
+
+      res.json({
+        success: true,
+        data: enhancedModules
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /api/brd/enhance-user-stories
+ * Enhance user stories for selected modules
+ */
+router.post(
+  '/enhance-user-stories',
+  requireProjectOwner,
+  [
+    body('projectId').isUUID().withMessage('Valid project ID is required'),
+    body('userStories').isArray().withMessage('User stories array is required'),
+    body('modules').isArray().withMessage('Modules array is required'),
+    body('enhancementRequest').notEmpty().withMessage('Enhancement request is required')
+  ],
+  async (req: AuthRequest, res: any, next: any) => {
+    try {
+      if (!isOpenAIConfigured()) {
+        throw new AppError('OpenAI API is not configured', 500);
+      }
+
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({
+          success: false,
+          errors: errors.array()
+        });
+      }
+
+      const { projectId, userStories, modules, enhancementRequest } = req.body;
+
+      // Create a structure with modules and their user stories
+      const modulesWithStories = modules.map((module: any) => ({
+        ...module,
+        userStories: userStories.filter((story: any) => story.moduleId === module.id)
+      }));
+
+      // Enhance user stories using OpenAI
+      const enhancedData = await enhanceProjectSection({
+        existingProjectJson: { modules: modulesWithStories },
+        enhancementRequest,
+        targetType: 'userStories'
+      });
+
+      // Extract just the user stories from the enhanced modules
+      const enhancedStories: any[] = [];
+      if (enhancedData && Array.isArray(enhancedData)) {
+        enhancedData.forEach((module: any) => {
+          if (module.userStories && Array.isArray(module.userStories)) {
+            module.userStories.forEach((story: any) => {
+              enhancedStories.push({
+                ...story,
+                moduleId: module.id || story.moduleId
+              });
+            });
+          }
+        });
+      }
+
+      res.json({
+        success: true,
+        data: enhancedStories
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /api/brd/enhance-business-rules
+ * Enhance selected business rule categories with AI
+ */
+router.post(
+  '/enhance-business-rules',
+  requireProjectOwner,
+  [
+    body('projectId').isUUID().withMessage('Valid project ID is required'),
+    body('categories').isArray().withMessage('Categories array is required'),
+    body('enhancementRequest').notEmpty().withMessage('Enhancement request is required')
+  ],
+  async (req: AuthRequest, res: any, next: any) => {
+    try {
+      if (!isOpenAIConfigured()) {
+        throw new AppError('OpenAI API is not configured', 500);
+      }
+
+      const errors = validationResult(req);
+      if (!errors.isEmpty()) {
+        return res.status(400).json({
+          success: false,
+          errors: errors.array()
+        });
+      }
+
+      const { projectId, categories, enhancementRequest, applyToAllProjects, specificModules } = req.body;
+
+      // Create a business rules structure for enhancement
+      const businessRulesData = {
+        categories,
+        applyToAllProjects,
+        specificModules
+      };
+
+      // Enhance business rules using OpenAI
+      const enhancedData = await enhanceProjectSection({
+        existingProjectJson: { businessRules: businessRulesData },
+        enhancementRequest,
+        targetType: 'businessRules'
+      });
+
+      res.json({
+        success: true,
+        data: enhancedData || businessRulesData
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
  * GET /api/brd/check
  * Check if OpenAI is configured
  */
