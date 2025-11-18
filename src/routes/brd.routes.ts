@@ -152,21 +152,46 @@ router.post(
 
       // Save business rules
       if (parsedBRD.businessRules && parsedBRD.businessRules.length > 0) {
-        await req.supabase!
+        const businessRulesConfig = {
+          categories: parsedBRD.businessRules.map(rule => ({
+            id: rule.ruleName.toLowerCase().replace(/\s+/g, '-'),
+            name: rule.ruleName,
+            description: rule.ruleDescription,
+            applicableTo: rule.applicableTo
+          })),
+          applyToAllProjects: false,
+          specificModules: []
+        };
+
+        // Check if business rules already exist
+        const { data: existingRules } = await req.supabase!
           .from('business_rules')
-          .upsert({
-            project_id: projectId,
-            config: {
-              categories: parsedBRD.businessRules.map(rule => ({
-                id: rule.ruleName.toLowerCase().replace(/\s+/g, '-'),
-                name: rule.ruleName,
-                description: rule.ruleDescription,
-                applicableTo: rule.applicableTo
-              })),
-              applyToAllProjects: false,
-              specificModules: []
-            }
-          });
+          .select('id')
+          .eq('project_id', projectId)
+          .single();
+
+        if (existingRules) {
+          // Update existing
+          await req.supabase!
+            .from('business_rules')
+            .update({
+              config: businessRulesConfig,
+              apply_to_all_project: false,
+              specific_modules: [],
+              updated_at: new Date().toISOString()
+            })
+            .eq('project_id', projectId);
+        } else {
+          // Insert new
+          await req.supabase!
+            .from('business_rules')
+            .insert({
+              project_id: projectId,
+              config: businessRulesConfig,
+              apply_to_all_project: false,
+              specific_modules: []
+            });
+        }
 
         console.log(`✅ ${parsedBRD.businessRules.length} business rules saved`);
       }
