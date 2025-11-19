@@ -1168,7 +1168,7 @@ router.post(
   requireProjectOwner,
   [
     body('projectId').isUUID().withMessage('Valid project ID is required'),
-    body('uerStories').isArray().withMessage('User stories array is required'),
+    body('userStories').isArray().withMessage('User stories array is required'),
     body('modules').isArray().withMessage('Modules array is required'),
     body('enhancementRequest').notEmpty().withMessage('Enhancement request is required')
   ],
@@ -1186,13 +1186,43 @@ router.post(
         });
       }
 
-      const { userStories, modules, enhancementRequest } = req.body;
+      const { projectId, userStories, modules, enhancementRequest } = req.body;
 
-      // Create a structure with modules and their user stories
-      const modulesWithStories = modules.map((module: any) => ({
-        ...module,
-        userStories: userStories.filter((story: any) => story.moduleId === module.id)
+      // Fetch features for each user story to provide full context
+      const userStoriesWithFeatures = await Promise.all(userStories.map(async (story: any) => {
+        const { data: features } = await req.supabase!
+          .from('features')
+          .select('*')
+          .eq('user_story_id', story.id)
+          .eq('project_id', projectId);
+
+        return {
+          ...story,
+          features: features?.map(f => ({
+            id: f.id,
+            featureName: f.title,
+            taskDescription: f.description,
+            priority: f.priority,
+            estimated_hours: f.estimated_hours,
+            business_rules: f.business_rules
+          })) || []
+        };
       }));
+
+      // Create a structure with modules and their user stories with features
+      const modulesWithStories = modules.map((module: any) => ({
+        id: module.id,
+        moduleName: module.module_name || module.moduleName,
+        description: module.description,
+        priority: module.priority,
+        businessImpact: module.business_impact || module.businessImpact,
+        dependencies: module.dependencies,
+        userStories: userStoriesWithFeatures.filter((story: any) => 
+          story.moduleId === module.id || story.module_id === module.id
+        )
+      }));
+
+      console.log(`📊 Enhancing ${userStoriesWithFeatures.length} user stories across ${modules.length} modules`);
 
       // Create a minimal ParsedBRD structure
       const projectDataForEnhancement: ParsedBRD = {
@@ -1223,24 +1253,166 @@ router.post(
         targetType: 'userStory'
       });
 
-      // Extract just the user stories from the enhanced modules
-      const enhancedStories: any[] = [];
-      if (enhancedData && Array.isArray(enhancedData)) {
-        enhancedData.forEach((module: any) => {
-          if (module.userStories && Array.isArray(module.userStories)) {
-            module.userStories.forEach((story: any) => {
-              enhancedStories.push({
-                ...story,
-                moduleId: module.id || story.moduleId
-              });
+      // Extract and process enhanced data
+      let enhancedStories: any[] = [];
+      let enhancedModulesData: any[] = [];
+
+      if (enhancedData?.updatedObject) {
+        if (enhancedData.targetType === 'userStory') {
+          // Single user story was enhanced
+          const updatedStory = enhancedData.updatedObject as any;
+          enhancedStories = [updatedStory];
+        } else if (enhancedData.targetType === 'project') {
+          // Full project structure was enhanced
+          const updatedProject = enhancedData.updatedObject as ParsedBRD;
+          if (updatedProject.modules) {
+            enhancedModulesData = updatedProject.modules;
+            // Extract user stories from modules
+            updatedProject.modules.forEach((module: any) => {
+              if (module.userStories && Array.isArray(module.userStories)) {
+                module.userStories.forEach((story: any) => {
+                  enhancedStories.push({
+                    ...story,
+                    moduleId: module.id || story.moduleId || story.module_id
+                  });
+                });
+              }
             });
           }
-        });
+        } else if ((enhancedData.updatedObject as any).modules) {
+          // Direct modules array in response
+          enhancedModulesData = (enhancedData.updatedObject as any).modules;
+          enhancedModulesData.forEach((module: any) => {
+            if (module.userStories && Array.isArray(module.userStories)) {
+              module.userStories.forEach((story: any) => {
+                enhancedStories.push({
+                  ...story,
+                  moduleId: module.id || story.moduleId || story.module_id
+                });
+              });
+            }
+          });
+        } else if (Array.isArray(enhancedData.updatedObject)) {
+          // Direct array - could be user stories or modules
+          const firstItem = enhancedData.updatedObject[0];
+          if (firstItem && firstItem.userStories) {
+            // Array of modules
+            enhancedModulesData = enhancedData.updatedObject;
+            enhancedData.updatedObject.forEach((module: any) => {
+              if (module.userStories && Array.isArray(module.userStories)) {
+                module.userStories.forEach((story: any) => {
+                  enhancedStories.push({
+                    ...story,
+                    moduleId: module.id || story.moduleId || story.module_id
+                  });
+                });
+              }
+            });
+          } else {
+            // Direct array of user stories
+            enhancedStories = enhancedData.updatedObject;
+          }
+        }
       }
+
+      // Save enhanced data to Supabase
+      const savedUserStories: any[] = [];
+      const savedFeatures: any[] = [];
+
+      for (const story of enhancedStories) {
+        try {
+          // Find the module ID for this story
+          const moduleId = story.moduleId || story.module_id || 
+            userStories.find((s: any) => s.id === story.id)?.module_id ||
+            userStories.find((s: any) => s.id === story.id)?.moduleId;
+
+          if (!moduleId) {
+            console.error(`⚠️ No module ID found for user story: ${story.title}`);
+            continue;
+          }
+
+          const storyToSave = {
+            id: story.id || crypto.randomUUID(),
+            project_id: projectId,
+            module_id: moduleId,
+            title: story.title,
+            user_role: story.userRole || story.user_role || 'User',
+            description: story.description || '',
+            acceptance_criteria: Array.isArray(story.acceptanceCriteria)
+              ? story.acceptanceCriteria.join('\n')
+              : (story.acceptanceCriteria || story.acceptance_criteria || ''),
+            priority: story.priority || 'Medium',
+            status: story.status || 'Not Started'
+          };
+
+          const { data: savedStory, error: storyError } = await req.supabase!
+            .from('user_stories')
+            .upsert(storyToSave, { onConflict: 'id' })
+            .select()
+            .single();
+
+          if (storyError) {
+            console.error(`❌ Error saving user story:`, storyError);
+            continue;
+          }
+
+          savedUserStories.push(savedStory);
+          console.log(`✅ Enhanced user story saved: ${story.title}`);
+
+          // Save features if present
+          if (story.features && Array.isArray(story.features)) {
+            for (const feature of story.features) {
+              try {
+                const featureToSave = {
+                  id: feature.id || crypto.randomUUID(),
+                  project_id: projectId,
+                  module_id: moduleId,
+                  user_story_id: story.id || savedStory.id,
+                  title: feature.featureName || feature.title || feature.name || 'Untitled Feature',
+                  description: feature.taskDescription || feature.description || '',
+                  priority: feature.priority || 'Medium',
+                  status: feature.status || 'Not Started',
+                  business_rules: feature.business_rules || feature.businessRules || null,
+                  estimated_hours: feature.estimated_hours || feature.estimatedHours || null,
+                  assignee: feature.assignee || null
+                };
+
+                const { data: savedFeature, error: featureError } = await req.supabase!
+                  .from('features')
+                  .upsert(featureToSave, { onConflict: 'id' })
+                  .select()
+                  .single();
+
+                if (featureError) {
+                  console.error(`  ❌ Error saving feature:`, featureError);
+                  continue;
+                }
+
+                savedFeatures.push(savedFeature);
+                console.log(`  ✅ Enhanced feature saved: ${featureToSave.title}`);
+              } catch (featureErr) {
+                console.error('  ❌ Unexpected error saving feature:', featureErr);
+              }
+            }
+          }
+        } catch (storyErr) {
+          console.error('❌ Unexpected error saving user story:', storyErr);
+        }
+      }
+
+      console.log(`
+📊 Enhancement Summary:
+  - User Stories saved: ${savedUserStories.length}
+  - Features saved: ${savedFeatures.length}
+      `);
 
       res.json({
         success: true,
-        data: enhancedStories
+        data: enhancedStories,
+        saved: {
+          userStories: savedUserStories.length,
+          features: savedFeatures.length
+        }
       });
     } catch (error) {
       next(error);
