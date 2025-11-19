@@ -883,12 +883,106 @@ router.post(
 
       const { projectId, modules, enhancementRequest } = req.body;
 
-      // Enhance modules using OpenAI
-      const enhancedModules = await enhanceProjectSection({
-        existingProjectJson: { modules },
+      // Fetch user stories and features for each module
+      const modulesWithRelatedData = await Promise.all(modules.map(async (module: any) => {
+        // Fetch user stories for this module
+        const { data: userStories } = await req.supabase!
+          .from('user_stories')
+          .select('*')
+          .eq('module_id', module.id)
+          .eq('project_id', projectId);
+
+        // Fetch features for this module
+        const { data: features } = await req.supabase!
+          .from('features')
+          .select('*')
+          .eq('module_id', module.id)
+          .eq('project_id', projectId);
+
+        // Build the complete module structure with user stories and features
+        const userStoriesWithFeatures = userStories?.map(story => {
+          const storyFeatures = features?.filter(f => f.user_story_id === story.id) || [];
+          return {
+            id: story.id,
+            title: story.title,
+            userRole: story.user_role,
+            description: story.description,
+            acceptanceCriteria: story.acceptance_criteria?.split('\n') || [],
+            priority: story.priority,
+            features: storyFeatures.map(f => ({
+              id: f.id,
+              featureName: f.title,
+              taskDescription: f.description,
+              priority: f.priority,
+              estimated_hours: f.estimated_hours,
+              business_rules: f.business_rules
+            }))
+          };
+        }) || [];
+
+        return {
+          id: module.id,
+          moduleName: module.module_name || module.moduleName,
+          description: module.description,
+          priority: module.priority,
+          businessImpact: module.business_impact || module.businessImpact,
+          dependencies: module.dependencies,
+          status: module.status,
+          userStories: userStoriesWithFeatures
+        };
+      }));
+
+      console.log(`📊 Enhancing ${modulesWithRelatedData.length} modules with their user stories and features`);
+
+      // Create a minimal ParsedBRD structure with just the modules
+      const projectDataForEnhancement: ParsedBRD = {
+        projectOverview: {
+          projectName: '',
+          projectDescription: '',
+          businessIntent: {
+            vision: '',
+            purpose: '',
+            objectives: [],
+            projectScope: { inScope: [], outOfScope: [] }
+          },
+          requirements: {
+            functional: [],
+            nonFunctional: [],
+            integration: [],
+            reporting: []
+          }
+        },
+        modules: modulesWithRelatedData,
+        businessRules: []
+      };
+
+      // Enhance modules with complete data using OpenAI
+      const enhancedData = await enhanceProjectSection({
+        existingProjectJson: projectDataForEnhancement,
         enhancementRequest,
-        targetType: 'modules'
+        targetType: 'module'
       });
+
+      // Extract the enhanced modules from the response
+      let enhancedModules = modulesWithRelatedData;
+      if (enhancedData?.updatedObject) {
+        if (enhancedData.targetType === 'module') {
+          // Single module was enhanced
+          const updatedModule = enhancedData.updatedObject as any;
+          enhancedModules = modulesWithRelatedData.map(m => 
+            m.id === updatedModule.id ? updatedModule : m
+          );
+        } else if (enhancedData.targetType === 'project') {
+          // Full project structure was enhanced - extract modules
+          const updatedProject = enhancedData.updatedObject as ParsedBRD;
+          if (updatedProject.modules) {
+            enhancedModules = updatedProject.modules;
+          }
+        } else if ((enhancedData.updatedObject as any).modules) {
+          // Direct modules array in response
+          enhancedModules = (enhancedData.updatedObject as any).modules;
+        }
+      }
 
       res.json({
         success: true,
@@ -927,7 +1021,7 @@ router.post(
         });
       }
 
-      const { projectId, userStories, modules, enhancementRequest } = req.body;
+      const { userStories, modules, enhancementRequest } = req.body;
 
       // Create a structure with modules and their user stories
       const modulesWithStories = modules.map((module: any) => ({
@@ -935,11 +1029,33 @@ router.post(
         userStories: userStories.filter((story: any) => story.moduleId === module.id)
       }));
 
+      // Create a minimal ParsedBRD structure
+      const projectDataForEnhancement: ParsedBRD = {
+        projectOverview: {
+          projectName: '',
+          projectDescription: '',
+          businessIntent: {
+            vision: '',
+            purpose: '',
+            objectives: [],
+            projectScope: { inScope: [], outOfScope: [] }
+          },
+          requirements: {
+            functional: [],
+            nonFunctional: [],
+            integration: [],
+            reporting: []
+          }
+        },
+        modules: modulesWithStories,
+        businessRules: []
+      };
+
       // Enhance user stories using OpenAI
       const enhancedData = await enhanceProjectSection({
-        existingProjectJson: { modules: modulesWithStories },
+        existingProjectJson: projectDataForEnhancement,
         enhancementRequest,
-        targetType: 'userStories'
+        targetType: 'userStory'
       });
 
       // Extract just the user stories from the enhanced modules
@@ -993,25 +1109,57 @@ router.post(
         });
       }
 
-      const { projectId, categories, enhancementRequest, applyToAllProjects, specificModules } = req.body;
+      const { categories, enhancementRequest } = req.body;
 
-      // Create a business rules structure for enhancement
-      const businessRulesData = {
-        categories,
-        applyToAllProjects,
-        specificModules
+      // Create a minimal ParsedBRD structure with business rules
+      const projectDataForEnhancement: ParsedBRD = {
+        projectOverview: {
+          projectName: '',
+          projectDescription: '',
+          businessIntent: {
+            vision: '',
+            purpose: '',
+            objectives: [],
+            projectScope: { inScope: [], outOfScope: [] }
+          },
+          requirements: {
+            functional: [],
+            nonFunctional: [],
+            integration: [],
+            reporting: []
+          }
+        },
+        modules: [],
+        businessRules: categories || []
       };
 
       // Enhance business rules using OpenAI
       const enhancedData = await enhanceProjectSection({
-        existingProjectJson: { businessRules: businessRulesData },
+        existingProjectJson: projectDataForEnhancement,
         enhancementRequest,
-        targetType: 'businessRules'
+        targetType: undefined // Let the service determine based on content
       });
+
+      // Extract enhanced business rules
+      let enhancedBusinessRules = categories;
+      if (enhancedData?.updatedObject) {
+        if (enhancedData.targetType === 'project') {
+          // Full project structure - extract business rules
+          const updatedProject = enhancedData.updatedObject as ParsedBRD;
+          if (updatedProject.businessRules) {
+            enhancedBusinessRules = updatedProject.businessRules;
+          }
+        } else if ((enhancedData.updatedObject as any).businessRules) {
+          enhancedBusinessRules = (enhancedData.updatedObject as any).businessRules;
+        } else {
+          // Direct business rules array
+          enhancedBusinessRules = enhancedData.updatedObject as any;
+        }
+      }
 
       res.json({
         success: true,
-        data: enhancedData || businessRulesData
+        data: enhancedBusinessRules
       });
     } catch (error) {
       next(error);
