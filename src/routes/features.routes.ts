@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authenticateUser, AuthRequest } from '../middleware/auth';
 import { AppError } from '../middleware/errorHandler';
 import OpenAI from 'openai';
+import crypto from 'crypto';
 
 // Initialize OpenRouter client for AI recommendations
 const openai = new OpenAI({
@@ -15,6 +16,101 @@ const openai = new OpenAI({
 
 const router = Router();
 router.use(authenticateUser);
+
+// Debug: Log when routes are registered
+console.log('📍 Registering features routes...');
+
+// Test route to verify routes are loading
+router.get('/projects/:projectId/features/test', (req, res) => {
+  res.json({ success: true, message: 'Features routes are working!' });
+});
+
+// Debug: Registering single feature route (moved before general routes)
+console.log('📍 Registering POST /projects/:projectId/features/single route');
+
+/**
+ * POST /api/projects/:projectId/features/single
+ * Add a single feature to a user story
+ */
+router.post('/projects/:projectId/features/single', async (req: AuthRequest, res, next) => {
+  try {
+    const { projectId } = req.params;
+    const feature = req.body;
+
+    console.log('📝 Adding single feature for project:', projectId);
+    console.log('📊 Feature details:', feature);
+
+    // Validate required fields
+    if (!feature.title || !feature.userStoryId) {
+      throw new AppError('Feature title and userStoryId are required', 400);
+    }
+
+    // Verify that the user story exists
+    const { data: userStory, error: storyError } = await req.supabase!
+      .from('user_stories')
+      .select('id, module_id')
+      .eq('id', feature.userStoryId)
+      .eq('project_id', projectId)
+      .single();
+
+    if (storyError || !userStory) {
+      console.error('❌ User story not found:', feature.userStoryId);
+      throw new AppError('User story not found', 404);
+    }
+
+    // Transform camelCase to snake_case for database
+    const transformedFeature = {
+      id: feature.id || crypto.randomUUID(),
+      project_id: projectId,
+      title: feature.title,
+      description: feature.description || '',
+      user_story_id: feature.userStoryId,
+      module_id: feature.moduleId || userStory.module_id, // Use module_id from user story if not provided
+      priority: feature.priority || 'Medium',
+      status: feature.status || 'Not Started',
+      estimated_hours: feature.estimatedHours || null,
+      assignee: feature.assignee || null,
+      business_rules: feature.businessRules || null
+    };
+
+    console.log('🔧 Transformed feature:', transformedFeature);
+
+    // Insert the feature
+    const { data, error } = await req.supabase!
+      .from('features')
+      .insert(transformedFeature)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('❌ Error inserting feature:', error);
+      throw new AppError(error.message, 400);
+    }
+
+    // Transform back to camelCase for response
+    const responseFeature = {
+      id: data.id,
+      title: data.title,
+      description: data.description,
+      userStoryId: data.user_story_id,
+      moduleId: data.module_id,
+      priority: data.priority,
+      status: data.status,
+      estimatedHours: data.estimated_hours,
+      assignee: data.assignee,
+      businessRules: data.business_rules
+    };
+
+    console.log('✅ Feature added successfully:', responseFeature);
+
+    res.json({
+      success: true,
+      feature: responseFeature
+    });
+  } catch (error) {
+    next(error);
+  }
+});
 
 /**
  * GET /api/projects/:projectId/features
