@@ -192,7 +192,6 @@ router.post(
       .notEmpty()
       .isIn(['Frontend', 'Backend API', 'Database Schema', 'Unit Tests', 'Integration Tests', 'Batch Application', 'Microservices', 'CI/CD Pipeline', 'Documentation', 'UI Components', 'API Endpoints', 'Database Schema', 'Business Logic', 'Authentication', 'Validation', 'Testing'])
       .withMessage('Invalid development type'),
-    body('previousOutputs').optional().isArray().withMessage('Previous outputs must be an array'),
     body('selectedModuleIds').optional().isArray().withMessage('Selected module IDs must be an array'),
     body('selectedModuleIds.*').optional().isUUID().withMessage('Each module ID must be a valid UUID'),
     body('selectedFeatureIds').optional().isArray().withMessage('Selected feature IDs must be an array'),
@@ -200,7 +199,7 @@ router.post(
   ],
   async (req: AuthRequest, res, next) => {
     try {
-      const { projectId, developmentType, previousOutputs = [], selectedModuleIds = [], selectedFeatureIds = [] } = req.body;
+      const { projectId, developmentType, selectedModuleIds = [], selectedFeatureIds = [] } = req.body;
 
       // Check if OpenAI is configured
       if (!isOpenAIConfigured()) {
@@ -215,7 +214,7 @@ router.post(
       console.log(`🎯 Vibe Engineer generating ${developmentType} prompt...`);
 
       // Fetch comprehensive project data
-      const [projectRes, modulesRes, userStoriesRes, featuresRes, projectInfoRes, businessRulesRes, techStackRes, uiuxRes, previousPromptsRes] = await Promise.all([
+      const [projectRes, modulesRes, userStoriesRes, featuresRes, projectInfoRes, businessRulesRes, techStackRes, uiuxRes] = await Promise.all([
         req.supabase!.from('projects').select('*').eq('id', projectId).single(),
         req.supabase!.from('modules').select('*').eq('project_id', projectId),
         req.supabase!.from('user_stories').select('*').eq('project_id', projectId),
@@ -223,12 +222,7 @@ router.post(
         req.supabase!.from('project_information').select('*').eq('project_id', projectId).single(),
         req.supabase!.from('business_rules').select('*').eq('project_id', projectId).single(),
         req.supabase!.from('tech_stack').select('*').eq('project_id', projectId).single(),
-        req.supabase!.from('uiux_guidelines').select('*').eq('project_id', projectId).single(),
-        // Fetch previous prompts and their saved implementations
-        req.supabase!.from('ai_prompts')
-          .select('generated_prompt, context')
-          .eq('project_id', projectId)
-          .order('created_at', { ascending: true })
+        req.supabase!.from('uiux_guidelines').select('*').eq('project_id', projectId).single()
       ]);
 
       if (!projectRes.data) {
@@ -279,22 +273,6 @@ router.post(
         selectedFeatureIds
       };
 
-      // Collect previous outputs from saved prompts and implementations
-      const allPreviousOutputs = [...previousOutputs];
-      
-      // Add saved implementation code from previous prompts if available
-      if (previousPromptsRes.data && previousPromptsRes.data.length > 0) {
-        previousPromptsRes.data.forEach((prompt: any) => {
-          // Include the generated prompt itself
-          if (prompt.generated_prompt) {
-            allPreviousOutputs.push(prompt.generated_prompt);
-          }
-          // Include saved implementation code if available in context
-          if (prompt.context?.implementationCode) {
-            allPreviousOutputs.push(prompt.context.implementationCode);
-          }
-        });
-      }
 
       // Map layer types to proper DevelopmentType
       const developmentTypeMap: Record<string, string> = {
@@ -309,12 +287,12 @@ router.post(
 
       const mappedDevelopmentType = developmentTypeMap[developmentType] || developmentType;
 
-      // Generate the prompt using STRUCT_TO_PROMPT
+      // Generate the prompt using STRUCT_TO_PROMPT (independent generation)
       const generatedPrompt = await generateContextualPrompt(
         projectId,
         projectData,
         mappedDevelopmentType,
-        allPreviousOutputs
+        [] // No previous outputs - generate independently
       );
 
       // Save the generated prompt with metadata
@@ -329,7 +307,7 @@ router.post(
             developmentType: mappedDevelopmentType,
             originalDevelopmentType: developmentType,
             applicationType: projectRes.data.application_type,
-            previousOutputsCount: allPreviousOutputs.length,
+            independentGeneration: true, // Prompts are generated independently
             selectedModuleIds: selectedModuleIds || [],
             selectedFeatureIds: selectedFeatureIds || [],
             generatedAt: new Date().toISOString()
