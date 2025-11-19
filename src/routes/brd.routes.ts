@@ -981,12 +981,177 @@ router.post(
         } else if ((enhancedData.updatedObject as any).modules) {
           // Direct modules array in response
           enhancedModules = (enhancedData.updatedObject as any).modules;
+        } else if (Array.isArray(enhancedData.updatedObject)) {
+          // Direct array of modules
+          enhancedModules = enhancedData.updatedObject;
         }
       }
 
+      // Save enhanced data to Supabase
+      const savedModules: any[] = [];
+      const savedUserStories: any[] = [];
+      const savedFeatures: any[] = [];
+
+      for (const module of enhancedModules) {
+        try {
+          // Update module in database
+          const moduleToSave = {
+            id: module.id,
+            project_id: projectId,
+            module_name: module.moduleName || module.module_name,
+            description: module.description || module.moduleDescription,
+            priority: module.priority || 'Medium',
+            business_impact: module.businessImpact || module.business_impact,
+            dependencies: Array.isArray(module.dependencies) 
+              ? module.dependencies.join(', ') 
+              : (module.dependencies || ''),
+            status: module.status || 'Not Started'
+          };
+
+          const { data: savedModule, error: moduleError } = await req.supabase!
+            .from('modules')
+            .upsert(moduleToSave, { onConflict: 'id' })
+            .select()
+            .single();
+
+          if (moduleError) {
+            console.error(`❌ Error saving module ${module.id}:`, moduleError);
+            continue;
+          }
+
+          savedModules.push(savedModule);
+          console.log(`✅ Enhanced module saved: ${moduleToSave.module_name}`);
+
+          // Save user stories if present
+          if (module.userStories && Array.isArray(module.userStories)) {
+            for (const story of module.userStories) {
+              try {
+                const storyToSave = {
+                  id: story.id || crypto.randomUUID(),
+                  project_id: projectId,
+                  module_id: module.id,
+                  title: story.title,
+                  user_role: story.userRole || story.user_role || 'User',
+                  description: story.description || '',
+                  acceptance_criteria: Array.isArray(story.acceptanceCriteria)
+                    ? story.acceptanceCriteria.join('\n')
+                    : (story.acceptanceCriteria || story.acceptance_criteria || ''),
+                  priority: story.priority || 'Medium',
+                  status: story.status || 'Not Started'
+                };
+
+                const { data: savedStory, error: storyError } = await req.supabase!
+                  .from('user_stories')
+                  .upsert(storyToSave, { onConflict: 'id' })
+                  .select()
+                  .single();
+
+                if (storyError) {
+                  console.error(`  ❌ Error saving user story:`, storyError);
+                  continue;
+                }
+
+                savedUserStories.push(savedStory);
+                console.log(`  ✅ Enhanced user story saved: ${story.title}`);
+
+                // Save features if present
+                if (story.features && Array.isArray(story.features)) {
+                  for (const feature of story.features) {
+                    try {
+                      const featureToSave = {
+                        id: feature.id || crypto.randomUUID(),
+                        project_id: projectId,
+                        module_id: module.id,
+                        user_story_id: story.id || savedStory.id,
+                        title: feature.featureName || feature.title || feature.name || 'Untitled Feature',
+                        description: feature.taskDescription || feature.description || '',
+                        priority: feature.priority || 'Medium',
+                        status: feature.status || 'Not Started',
+                        business_rules: feature.business_rules || feature.businessRules || null,
+                        estimated_hours: feature.estimated_hours || feature.estimatedHours || null,
+                        assignee: feature.assignee || null
+                      };
+
+                      const { data: savedFeature, error: featureError } = await req.supabase!
+                        .from('features')
+                        .upsert(featureToSave, { onConflict: 'id' })
+                        .select()
+                        .single();
+
+                      if (featureError) {
+                        console.error(`    ❌ Error saving feature:`, featureError);
+                        continue;
+                      }
+
+                      savedFeatures.push(savedFeature);
+                      console.log(`    ✅ Enhanced feature saved: ${featureToSave.title}`);
+                    } catch (featureErr) {
+                      console.error('    ❌ Unexpected error saving feature:', featureErr);
+                    }
+                  }
+                }
+              } catch (storyErr) {
+                console.error('  ❌ Unexpected error saving user story:', storyErr);
+              }
+            }
+          }
+
+          // Also check for features directly attached to modules
+          if (module.features && Array.isArray(module.features)) {
+            for (const feature of module.features) {
+              try {
+                const featureToSave = {
+                  id: feature.id || crypto.randomUUID(),
+                  project_id: projectId,
+                  module_id: module.id,
+                  user_story_id: feature.userStoryId || feature.user_story_id || null,
+                  title: feature.featureName || feature.title || feature.name || 'Untitled Feature',
+                  description: feature.taskDescription || feature.description || '',
+                  priority: feature.priority || 'Medium',
+                  status: feature.status || 'Not Started',
+                  business_rules: feature.business_rules || feature.businessRules || null,
+                  estimated_hours: feature.estimated_hours || feature.estimatedHours || null,
+                  assignee: feature.assignee || null
+                };
+
+                const { data: savedFeature, error: featureError } = await req.supabase!
+                  .from('features')
+                  .upsert(featureToSave, { onConflict: 'id' })
+                  .select()
+                  .single();
+
+                if (featureError) {
+                  console.error(`  ❌ Error saving module feature:`, featureError);
+                  continue;
+                }
+
+                savedFeatures.push(savedFeature);
+                console.log(`  ✅ Enhanced module feature saved: ${featureToSave.title}`);
+              } catch (featureErr) {
+                console.error('  ❌ Unexpected error saving module feature:', featureErr);
+              }
+            }
+          }
+        } catch (moduleErr) {
+          console.error('❌ Unexpected error saving module:', moduleErr);
+        }
+      }
+
+      console.log(`
+📊 Enhancement Summary:
+  - Modules saved: ${savedModules.length}
+  - User Stories saved: ${savedUserStories.length}
+  - Features saved: ${savedFeatures.length}
+      `);
+
       res.json({
         success: true,
-        data: enhancedModules
+        data: enhancedModules,
+        saved: {
+          modules: savedModules.length,
+          userStories: savedUserStories.length,
+          features: savedFeatures.length
+        }
       });
     } catch (error) {
       next(error);
@@ -1003,7 +1168,7 @@ router.post(
   requireProjectOwner,
   [
     body('projectId').isUUID().withMessage('Valid project ID is required'),
-    body('userStories').isArray().withMessage('User stories array is required'),
+    body('uerStories').isArray().withMessage('User stories array is required'),
     body('modules').isArray().withMessage('Modules array is required'),
     body('enhancementRequest').notEmpty().withMessage('Enhancement request is required')
   ],
