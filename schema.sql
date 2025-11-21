@@ -67,6 +67,7 @@ CREATE TABLE public.features (
   assignee text,
   created_at timestamp with time zone DEFAULT now(),
   updated_at timestamp with time zone DEFAULT now(),
+  business_rules text,
   CONSTRAINT features_pkey PRIMARY KEY (id),
   CONSTRAINT features_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.projects(id),
   CONSTRAINT features_user_story_id_fkey FOREIGN KEY (user_story_id) REFERENCES public.user_stories(id),

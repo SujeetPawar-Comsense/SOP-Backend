@@ -3,6 +3,7 @@ import { body, param } from 'express-validator';
 import { authenticateUser, AuthRequest } from '../middleware/auth';
 import { AppError } from '../middleware/errorHandler';
 import { generateContextualPrompt, isOpenAIConfigured } from '../services/openai.service';
+import { initializeRAG, queryRAG, checkRAGHealth } from '../services/rag.service';
 
 const router = Router();
 router.use(authenticateUser);
@@ -189,13 +190,16 @@ router.post(
     body('projectId').isUUID(),
     body('developmentType')
       .notEmpty()
-      .isIn(['Frontend', 'Backend API', 'Database Schema', 'Unit Tests', 'Integration Tests', 'Batch Application', 'Microservices', 'CI/CD Pipeline', 'Documentation'])
+      .isIn(['Frontend', 'Backend API', 'Database Schema', 'Unit Tests', 'Integration Tests', 'Batch Application', 'Microservices', 'CI/CD Pipeline', 'Documentation', 'UI Components', 'API Endpoints', 'Database Schema', 'Business Logic', 'Authentication', 'Validation', 'Testing'])
       .withMessage('Invalid development type'),
-    body('previousOutputs').optional().isArray().withMessage('Previous outputs must be an array')
+    body('selectedModuleIds').optional().isArray().withMessage('Selected module IDs must be an array'),
+    body('selectedModuleIds.*').optional().isUUID().withMessage('Each module ID must be a valid UUID'),
+    body('selectedFeatureIds').optional().isArray().withMessage('Selected feature IDs must be an array'),
+    body('selectedFeatureIds.*').optional().isUUID().withMessage('Each feature ID must be a valid UUID')
   ],
   async (req: AuthRequest, res, next) => {
     try {
-      const { projectId, developmentType, previousOutputs = [] } = req.body;
+      const { projectId, developmentType, selectedModuleIds = [], selectedFeatureIds = [] } = req.body;
 
       // Check if OpenAI is configured
       if (!isOpenAIConfigured()) {
@@ -225,14 +229,35 @@ router.post(
         throw new AppError('Project not found', 404);
       }
 
-      // Build complete project data structure
+      // Filter modules and features based on selection
+      let filteredModules = modulesRes.data || [];
+      let filteredFeatures = featuresRes.data || [];
+      let filteredUserStories = userStoriesRes.data || [];
+
+      // Filter by selected modules (if any)
+      if (selectedModuleIds && selectedModuleIds.length > 0) {
+        filteredModules = filteredModules.filter((m: any) => selectedModuleIds.includes(m.id));
+        filteredFeatures = filteredFeatures.filter((f: any) => 
+          f.module_id && selectedModuleIds.includes(f.module_id)
+        );
+        filteredUserStories = filteredUserStories.filter((us: any) => 
+          us.module_id && selectedModuleIds.includes(us.module_id)
+        );
+      }
+
+      // Further filter by selected features (if any)
+      if (selectedFeatureIds && selectedFeatureIds.length > 0) {
+        filteredFeatures = filteredFeatures.filter((f: any) => selectedFeatureIds.includes(f.id));
+      }
+
+      // Build complete project data structure with filtered data
       const projectData = {
         name: projectRes.data.name,
         description: projectRes.data.description,
         application_type: projectRes.data.application_type,
-        modules: modulesRes.data || [],
-        userStories: userStoriesRes.data || [],
-        features: featuresRes.data || [],
+        modules: filteredModules,
+        userStories: filteredUserStories,
+        features: filteredFeatures,
         vision: projectInfoRes.data?.vision,
         purpose: projectInfoRes.data?.purpose,
         objectives: projectInfoRes.data?.objectives,
@@ -243,15 +268,31 @@ router.post(
         reportingRequirements: projectInfoRes.data?.reporting_requirements,
         businessRules: businessRulesRes.data?.config?.categories || [],
         techStack: techStackRes.data?.tech_stack,
-        uiuxGuidelines: uiuxRes.data?.guidelines
+        uiuxGuidelines: uiuxRes.data?.guidelines,
+        selectedModuleIds,
+        selectedFeatureIds
       };
 
-      // Generate the prompt using STRUCT_TO_PROMPT
+
+      // Map layer types to proper DevelopmentType
+      const developmentTypeMap: Record<string, string> = {
+        'UI Components': 'Frontend',
+        'API Endpoints': 'Backend API',
+        'Database Schema': 'Database Schema',
+        'Business Logic': 'Backend API',
+        'Authentication': 'Backend API',
+        'Validation': 'Backend API',
+        'Testing': 'Unit Tests'
+      };
+
+      const mappedDevelopmentType = developmentTypeMap[developmentType] || developmentType;
+
+      // Generate the prompt using STRUCT_TO_PROMPT (independent generation)
       const generatedPrompt = await generateContextualPrompt(
         projectId,
         projectData,
-        developmentType,
-        previousOutputs
+        mappedDevelopmentType,
+        [] // No previous outputs - generate independently
       );
 
       // Save the generated prompt with metadata
@@ -259,13 +300,16 @@ router.post(
         .from('ai_prompts')
         .insert({
           project_id: projectId,
-          prompt_type: `vibe_${developmentType.toLowerCase().replace(/ /g, '_')}`,
+          prompt_type: `vibe_${mappedDevelopmentType.toLowerCase().replace(/ /g, '_')}`,
           generated_prompt: generatedPrompt,
           context: {
             role: 'vibe_engineer',
-            developmentType,
+            developmentType: mappedDevelopmentType,
+            originalDevelopmentType: developmentType,
             applicationType: projectRes.data.application_type,
-            previousOutputsCount: previousOutputs.length,
+            independentGeneration: true, // Prompts are generated independently
+            selectedModuleIds: selectedModuleIds || [],
+            selectedFeatureIds: selectedFeatureIds || [],
             generatedAt: new Date().toISOString()
           }
         })
@@ -281,7 +325,70 @@ router.post(
       res.json({
         success: true,
         prompt: savedPrompt,
-        message: `${developmentType} prompt generated successfully using STRUCT_TO_PROMPT`
+        generatedPrompt: generatedPrompt,
+        message: `${mappedDevelopmentType} prompt generated successfully using STRUCT_TO_PROMPT`
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * PUT /api/prompts/:id/implementation
+ * Save implementation code for a prompt
+ */
+router.put(
+  '/:id/implementation',
+  [
+    param('id').isUUID(),
+    body('implementationCode').notEmpty().withMessage('Implementation code is required'),
+    body('developerNotes').optional()
+  ],
+  async (req: AuthRequest, res, next) => {
+    try {
+      const { id } = req.params;
+      const { implementationCode, developerNotes } = req.body;
+
+      // Verify user is a Vibe Engineer
+      if (req.user?.role !== 'vibe_engineer') {
+        throw new AppError('This endpoint is only accessible to Vibe Engineers', 403);
+      }
+
+      // Get existing prompt
+      const { data: existingPrompt, error: fetchError } = await req.supabase!
+        .from('ai_prompts')
+        .select('*')
+        .eq('id', id)
+        .single();
+
+      if (fetchError || !existingPrompt) {
+        throw new AppError('Prompt not found', 404);
+      }
+
+      // Update prompt with implementation code
+      const { data: updatedPrompt, error: updateError } = await req.supabase!
+        .from('ai_prompts')
+        .update({
+          context: {
+            ...existingPrompt.context,
+            implementationCode,
+            developerNotes: developerNotes || existingPrompt.context?.developerNotes,
+            implementationSavedAt: new Date().toISOString()
+          }
+        })
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (updateError) {
+        throw new AppError(updateError.message, 400);
+      }
+
+      res.json({
+        success: true,
+        prompt: updatedPrompt,
+        message: 'Implementation code saved successfully'
       });
     } catch (error) {
       next(error);
@@ -311,6 +418,137 @@ router.delete('/:id', async (req: AuthRequest, res, next) => {
       message: 'Prompt deleted successfully'
     });
   } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/prompts/rag/initialize
+ * Initialize RAG system with project data
+ */
+router.post(
+  '/rag/initialize',
+  [
+    body('projectId').isUUID(),
+  ],
+  async (req: AuthRequest, res, next) => {
+    try {
+      const { projectId } = req.body;
+
+      // Verify user is a Vibe Engineer
+      if (req.user?.role !== 'vibe_engineer') {
+        throw new AppError('This endpoint is only accessible to Vibe Engineers', 403);
+      }
+
+      console.log(`🔍 Initializing RAG for project: ${projectId}`);
+
+      // Fetch comprehensive project data - ALL tables
+      const [
+        projectRes, 
+        modulesRes, 
+        userStoriesRes, 
+        featuresRes, 
+        projectInfoRes, 
+        businessRulesRes, 
+        techStackRes, 
+        uiuxRes,
+        actionsRes,
+        animationsRes,
+        promptsRes
+      ] = await Promise.all([
+        req.supabase!.from('projects').select('*').eq('id', projectId).single(),
+        req.supabase!.from('modules').select('*').eq('project_id', projectId),
+        req.supabase!.from('user_stories').select('*').eq('project_id', projectId),
+        req.supabase!.from('features').select('*').eq('project_id', projectId),
+        req.supabase!.from('project_information').select('*').eq('project_id', projectId).single(),
+        req.supabase!.from('business_rules').select('*').eq('project_id', projectId).single(),
+        req.supabase!.from('tech_stack').select('*').eq('project_id', projectId).single(),
+        req.supabase!.from('uiux_guidelines').select('*').eq('project_id', projectId).single(),
+        req.supabase!.from('actions_interactions').select('*').eq('project_id', projectId),
+        req.supabase!.from('animation_effects').select('*').eq('project_id', projectId),
+        req.supabase!.from('ai_prompts').select('*').eq('project_id', projectId).order('created_at', { ascending: false }).limit(10)
+      ]);
+
+      if (!projectRes.data) {
+        throw new AppError('Project not found', 404);
+      }
+
+      // Prepare complete project data for RAG
+      const projectData = {
+        project: projectRes.data || {},
+        project_information: projectInfoRes.data || {},
+        modules: modulesRes.data || [],
+        user_stories: userStoriesRes.data || [],
+        features: featuresRes.data || [],
+        business_rules: businessRulesRes.data || {},
+        tech_stack: techStackRes.data || {},
+        uiux_guidelines: uiuxRes.data || {},
+        actions_interactions: actionsRes.data || [],
+        animation_effects: animationsRes.data || [],
+        recent_ai_prompts: promptsRes.data || []
+      };
+
+      // Initialize RAG
+      await initializeRAG(projectId, projectData);
+
+      res.json({
+        success: true,
+        message: 'RAG system initialized successfully'
+      });
+    } catch (error: any) {
+      console.error('Error initializing RAG:', error);
+      next(error);
+    }
+  }
+);
+
+/**
+ * POST /api/prompts/rag/query
+ * Query RAG system with a question
+ */
+router.post(
+  '/rag/query',
+  [
+    body('projectId').isUUID(),
+    body('question').notEmpty().withMessage('Question is required'),
+  ],
+  async (req: AuthRequest, res, next) => {
+    try {
+      const { projectId, question } = req.body;
+
+      // Verify user is a Vibe Engineer
+      if (req.user?.role !== 'vibe_engineer') {
+        throw new AppError('This endpoint is only accessible to Vibe Engineers', 403);
+      }
+
+      console.log(`🔍 Querying RAG for project: ${projectId}, question: ${question}`);
+
+      // Query RAG
+      const answer = await queryRAG(projectId, question);
+
+      res.json({
+        success: true,
+        answer: answer
+      });
+    } catch (error: any) {
+      console.error('Error querying RAG:', error);
+      next(error);
+    }
+  }
+);
+
+/**
+ * GET /api/prompts/rag/health
+ * Check RAG service health
+ */
+router.get('/rag/health', async (req: AuthRequest, res, next) => {
+  try {
+    const isHealthy = await checkRAGHealth();
+    res.json({
+      success: true,
+      healthy: isHealthy
+    });
+  } catch (error: any) {
     next(error);
   }
 });

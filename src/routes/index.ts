@@ -10,7 +10,6 @@ import actionsRoutes from './actions.routes';
 import promptsRoutes from './prompts.routes';
 import uiuxRoutes from './uiux.routes';
 import techStackRoutes from './techStack.routes';
-import documentsRoutes from './documents.routes';
 import brdRoutes from './brd.routes';
 
 const router = Router();
@@ -36,7 +35,6 @@ router.use('/', businessRulesRoutes); // Includes /projects/:projectId/business-
 router.use('/', actionsRoutes); // Includes /projects/:projectId/actions
 router.use('/', uiuxRoutes); // Includes /projects/:projectId/uiux
 router.use('/', techStackRoutes); // Includes /projects/:projectId/tech-stack
-router.use('/', documentsRoutes); // Includes /projects/:projectId/documents
 router.use('/prompts', promptsRoutes); // Includes /prompts/generate and /projects/:projectId/prompts
 router.use('/brd', brdRoutes); // BRD parsing and enhancement
 
